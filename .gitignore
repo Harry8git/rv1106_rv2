@@ -1,0 +1,15 @@
+# Yocto build output
+build/tmp/
+build/sstate-cache/
+build/downloads/
+build/cache/
+build/deploy/
+
+# Build configuration generated locally
+build/conf/local.conf
+build/conf/bblayers.conf
+
+# BitBake/Yocto state
+bitbake*/.cache/
+*.pyc
+__pycache__/
