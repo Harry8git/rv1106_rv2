@@ -1,0 +1,106 @@
+From 754520f0d42374cde619167466b80d33d8e03969 Mon Sep 17 00:00:00 2001
+From: Harry Spencer <harry8@gmail.com>
+Date: Tue, 1 Sep 2026 21:52:36 -0700
+Subject: [PATCH] mpp_soc: add RV1103 and RV1106 encoder-only SoC support
+
+Upstream-Status: Pending
+
+Signed-off-by: Harry Spencer <harry8@gmail.com>
+---
+ mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c |  2 ++
+ mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c |  2 ++
+ mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c |  2 ++
+ osal/inc/mpp_soc.h                       |  2 ++
+ osal/mpp_soc.c                           | 24 ++++++++++++++++++++++++
+ 5 files changed, 32 insertions(+)
+
+diff --git a/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c b/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
+index 7b91cac37..619920321 100644
+--- a/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
++++ b/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
+@@ -1773,6 +1773,8 @@ const MppEncHalApi hal_h264e_vepu540c = {
+     .soc_type   = {
+         ROCKCHIP_SOC_RK3528,
+         ROCKCHIP_SOC_RK3562,
++        ROCKCHIP_SOC_RV1103,
++        ROCKCHIP_SOC_RV1106,
+         ROCKCHIP_SOC_BUTT
+     },
+ };
+diff --git a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+index fc8d7e283..520f4b816 100644
+--- a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
++++ b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+@@ -1682,6 +1682,8 @@ const MppEncHalApi hal_h265e_vepu540c = {
+     .client     = VPU_CLIENT_RKVENC,
+     .soc_type   = {
+         ROCKCHIP_SOC_RK3528,
++        ROCKCHIP_SOC_RV1103,
++        ROCKCHIP_SOC_RV1106,
+         ROCKCHIP_SOC_BUTT
+     },
+ };
+diff --git a/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c b/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
+index e57a83578..0149fb895 100644
+--- a/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
++++ b/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
+@@ -447,6 +447,8 @@ const MppEncHalApi hal_jpege_vepu540c = {
+     .soc_type   = {
+         ROCKCHIP_SOC_RK3528,
+         ROCKCHIP_SOC_RK3562,
++        ROCKCHIP_SOC_RV1103,
++        ROCKCHIP_SOC_RV1106,
+         ROCKCHIP_SOC_BUTT
+     },
+ };
+diff --git a/osal/inc/mpp_soc.h b/osal/inc/mpp_soc.h
+index 218a454a8..e5ecbd8ea 100644
+--- a/osal/inc/mpp_soc.h
++++ b/osal/inc/mpp_soc.h
+@@ -53,6 +53,8 @@ typedef enum RockchipSocType_e {
+     ROCKCHIP_SOC_RK3572,
+     ROCKCHIP_SOC_RK3539,
+     ROCKCHIP_SOC_RK182X,
++    ROCKCHIP_SOC_RV1103,
++    ROCKCHIP_SOC_RV1106,
+     ROCKCHIP_SOC_BUTT,
+ } RockchipSocType;
+ 
+diff --git a/osal/mpp_soc.c b/osal/mpp_soc.c
+index c146e5570..9156788aa 100644
+--- a/osal/mpp_soc.c
++++ b/osal/mpp_soc.c
+@@ -1102,6 +1102,30 @@ static const MppSocInfo mpp_soc_infos[] = {
+         {   &rkjpegd, NULL, NULL, NULL, NULL, NULL},
+         {   &rkjpege_vpu720, NULL, NULL, NULL},
+     },
++    {   /*
++        * rv1103 has codec:
++        * 1 - RK H.264/H.265/MJPEG encoder (vepu540c)
++        * Encoder-only IPC SoC; no hardware decoder.
++        */
++        "rv1103",
++        ROCKCHIP_SOC_RV1103,
++        HAVE_RKVENC,
++        {   NULL, NULL, NULL, NULL, NULL, NULL},
++        {   &vepu540c, NULL, NULL, NULL},
++    },
++    {   /*
++        * rv1106 has codec:
++        * 1 - RK H.264/H.265/MJPEG encoder (vepu540c)
++        * Encoder-only IPC SoC; no hardware decoder.
++        * Listed after rv1103 so strstr() reverse scan selects rv1106
++        * when device-tree compatible contains both rv1103g and rv1106g3.
++        */
++        "rv1106",
++        ROCKCHIP_SOC_RV1106,
++        HAVE_RKVENC,
++        {   NULL, NULL, NULL, NULL, NULL, NULL},
++        {   &vepu540c, NULL, NULL, NULL},
++    },
+ };
+ 
+ static const MppSocInfo mpp_soc_default = {
+-- 
+2.43.0
+
