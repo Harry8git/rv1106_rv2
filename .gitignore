@@ -5,6 +5,10 @@ build/downloads/
 build/cache/
 build/deploy/
 
+build/*.log
+build/conf/*.txt
+build/conf/templateconf.cfg
+
 # Build configuration generated locally
 build/conf/local.conf
 build/conf/bblayers.conf
