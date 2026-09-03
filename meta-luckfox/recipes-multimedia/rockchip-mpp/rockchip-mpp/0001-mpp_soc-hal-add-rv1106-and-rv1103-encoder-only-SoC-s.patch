@@ -1,19 +1,26 @@
-From 754520f0d42374cde619167466b80d33d8e03969 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Harry Spencer <harry8@gmail.com>
 Date: Tue, 1 Sep 2026 21:52:36 -0700
-Subject: [PATCH] mpp_soc: add RV1103 and RV1106 encoder-only SoC support
+Subject: [PATCH] mpp_soc: add RV1103 and RV1106 support and fix H265 DQP
 
 Upstream-Status: Pending
-
-Signed-off-by: Harry Spencer <harry8@gmail.com>
 ---
+ mpp/codec/enc/h265/h265e_ps.c            |  2 +-
  mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c |  2 ++
  mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c |  2 ++
- mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c |  2 ++
  osal/inc/mpp_soc.h                       |  2 ++
  osal/mpp_soc.c                           | 24 ++++++++++++++++++++++++
- 5 files changed, 32 insertions(+)
+ 5 files changed, 31 insertions(+), 1 deletion(-)
 
+diff --git a/mpp/codec/enc/h265/h265e_ps.c b/mpp/codec/enc/h265/h265e_ps.c
+index 380245d55..ea88869f6 100644
+--- a/mpp/codec/enc/h265/h265e_ps.c
++++ b/mpp/codec/enc/h265/h265e_ps.c
+@@ -412,3 +412,3 @@ MPP_RET h265e_set_pps(H265eCtx  *ctx, H265ePps *pps, H265eSps *sps)
+     pps->m_picInitQPMinus26 = 0;
+-    pps->m_useDQP = 1;
++    pps->m_useDQP = (codec->trans_cfg.diff_cu_qp_delta_depth > 0) ? 1 : 0;
+     pps->m_maxCuDQPDepth = codec->trans_cfg.diff_cu_qp_delta_depth;
 diff --git a/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c b/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
 index 7b91cac37..619920321 100644
 --- a/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
@@ -28,26 +35,38 @@ index 7b91cac37..619920321 100644
      },
  };
 diff --git a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
-index fc8d7e283..520f4b816 100644
+index fc8d7e283..85de9a5b0 100644
 --- a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
 +++ b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
-@@ -1682,6 +1682,8 @@ const MppEncHalApi hal_h265e_vepu540c = {
+@@ -1224,8 +1224,8 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
+ 
+     hal_h265e_enter();
+     hal_dbg_setup(ctx->dbg_ctx, NULL);
+-    pic_width_align8 = (syn->pp.pic_width + 7) & (~7);
+-    pic_height_align8 = (syn->pp.pic_height + 7) & (~7);
++    pic_width_align8 = MPP_ALIGN(syn->pp.pic_width, 16);
++    pic_height_align8 = MPP_ALIGN(syn->pp.pic_height, 16);
+     pic_wd32 = (syn->pp.pic_width +  31) / 32;
+     pic_h32 = (syn->pp.pic_height + 31) / 32;
+ 
+@@ -1280,11 +1280,9 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
+     reg_ctl->common.func_en.enc_done_tmvp_en   = 1;
+ 
+     reg_base->common.enc_rsl.pic_wd8_m1    = pic_width_align8 / 8 - 1;
+-    reg_base->common.src_fill.pic_wfill    = ((syn->pp.pic_width & 0x7) != 0)
+-                                             ? (8 - (syn->pp.pic_width & 0x7)) : 0;
++    reg_base->common.src_fill.pic_wfill    = pic_width_align8 - syn->pp.pic_width;
+     reg_base->common.enc_rsl.pic_hd8_m1    = pic_height_align8 / 8 - 1;
+-    reg_base->common.src_fill.pic_hfill    = ((syn->pp.pic_height & 0x7) != 0)
+-                                             ? (8 - (syn->pp.pic_height & 0x7)) : 0;
++    reg_base->common.src_fill.pic_hfill    = pic_height_align8 - syn->pp.pic_height;
+ 
+     reg_base->common.enc_pic.enc_stnd      = 1; //H265
+     reg_base->common.enc_pic.cur_frm_ref   = !syn->sp.non_reference_flag; //current frame will be refered
+@@ -1682,6 +1680,8 @@ const MppEncHalApi hal_h265e_vepu540c = {
      .client     = VPU_CLIENT_RKVENC,
      .soc_type   = {
          ROCKCHIP_SOC_RK3528,
-+        ROCKCHIP_SOC_RV1103,
-+        ROCKCHIP_SOC_RV1106,
-         ROCKCHIP_SOC_BUTT
-     },
- };
-diff --git a/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c b/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
-index e57a83578..0149fb895 100644
---- a/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
-+++ b/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
-@@ -447,6 +447,8 @@ const MppEncHalApi hal_jpege_vepu540c = {
-     .soc_type   = {
-         ROCKCHIP_SOC_RK3528,
-         ROCKCHIP_SOC_RK3562,
 +        ROCKCHIP_SOC_RV1103,
 +        ROCKCHIP_SOC_RV1106,
          ROCKCHIP_SOC_BUTT
@@ -103,4 +122,3 @@ index c146e5570..9156788aa 100644
  static const MppSocInfo mpp_soc_default = {
 -- 
 2.43.0
-
