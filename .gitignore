@@ -17,3 +17,4 @@ build/conf/bblayers.conf
 bitbake*/.cache/
 *.pyc
 __pycache__/
+.vscode/

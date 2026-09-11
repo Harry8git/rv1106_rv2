@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Harry Spencer <harry8@gmail.com>
+Date: Tue, 8 Sep 2026 22:15:00 -0700
+Subject: [PATCH] h265e_api, hal_jpege: set RV1103 and RV1106 max_cu_size to 32 and add JPEG enc
+
+Upstream-Status: Pending
+---
+diff --git a/mpp/codec/enc/h265/h265e_api.c b/mpp/codec/enc/h265/h265e_api.c
+index 1637782e3..27cc9d30b 100644
+--- a/mpp/codec/enc/h265/h265e_api.c
++++ b/mpp/codec/enc/h265/h265e_api.c
+@@ -72,6 +72,8 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
+ 
+     soc_type = mpp_get_soc_type();
+     if (soc_type == ROCKCHIP_SOC_RK3528 ||
++        soc_type == ROCKCHIP_SOC_RV1103 ||
++        soc_type == ROCKCHIP_SOC_RV1106 ||
+         soc_type == ROCKCHIP_SOC_RK3576 ||
+         soc_type == ROCKCHIP_SOC_RV1126B ||
+         soc_type == ROCKCHIP_SOC_RK3572)
+diff --git a/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c b/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
+index e57a83578..50bf94f91 100644
+--- a/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
++++ b/mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c
+@@ -446,6 +446,8 @@ const MppEncHalApi hal_jpege_vepu540c = {
+     .client     = VPU_CLIENT_RKVENC,
+     .soc_type   = {
+         ROCKCHIP_SOC_RK3528,
++        ROCKCHIP_SOC_RV1103,
++        ROCKCHIP_SOC_RV1106,
+         ROCKCHIP_SOC_RK3562,
+         ROCKCHIP_SOC_BUTT
+     },

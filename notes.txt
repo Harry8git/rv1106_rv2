@@ -1,0 +1,239 @@
+cd ~/yocto-luckfox
+source poky/oe-init-build-env build
+
+bitbake -c cleansstate u-boot-rockchip
+bitbake core-image-minimal
+
+# 1. Check if the Mac detects the board
+rkdeveloptool ld
+
+# 2. Go to your build deploy folder
+cd ~/OrbStack/RV1106-dev/home/hspencer/yocto-luckfox/build/tmp/deploy/images/luckfox-pico-pro-max/
+
+
+
+ls /dev/tty.usbmodem*
+screen /dev/tty.usbmodem* 115200
+
+cd ~/yocto-luckfox/build
+bitbake -c cleansstate linux-rockchip
+bitbake core-image-minimal
+
+
+
+
+
+
+
+
+Partitions defined in:
+luckfox-pico-pro-max-sd.wks.in
+
+
+
+
+sudo locale-gen en_US.UTF-8
+sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+export LANG=en_US.UTF-8
+
+mkdir -p ~/yocto-workspace
+cd ~/yocto-workspace
+grep "LAYERSERIES_COMPAT" meta-luckfox/conf/layer.conf
+
+grep "LAYERDEPENDS" meta-luckfox/conf/layer.conf
+
+
+
+
+
+
+bitbake virtual/kernel -c cleansstate
+
+bitbake core-image-minimal
+
+
+
+ls /dev/tty.* | grep -iE "usb|modem"
+
+ssh root@169.254.100.1
+
+
+
+
+
+
+ip addr del 172.32.0.93/16 dev usb0
+ip addr add 169.254.100.1/16 dev usb0
+
+source ~/rv1106-yocto/openembedded-core/oe-init-build-env build
+cd ~/rv2 || exit 1
+source openembedded-core/oe-init-build-env build
+bitbake core-image-minimal
+
+NEW_YOCTO="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-zero"
+rkdeveloptool db "$NEW_YOCTO/download.bin" && \
+rkdeveloptool wl 0 "$NEW_YOCTO/core-image-minimal-luckfox-pico-zero.rootfs.wic" && \
+rkdeveloptool rd
+
+./build-and-deploy-vtx.sh
+scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/vtx root@169.254.100.1:/usr/bin/vtx
+
+
+DEV=$(ls -1 /dev/cu.usbmodem* 2>/dev/null | head -n 1)
+stty -f "$DEV" 115200 raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
+cat "$DEV" | ffplay -fflags nobuffer -flags low_delay -framedrop -f hevc -i -
+
+
+
+
+ssh-keygen -R 169.254.100.1
+
+
+
+
+
+
+
+
+dmesg | grep -i "IMX462"
+media-ctl -p -d /dev/media0 | grep -C 5 "m00_b_imx462"
+
+/usr/bin/rkaiq_3A_server &
+sleep 2
+vtx
+
+
+
+
+
+
+ps | grep -E "rkaiq|3A|isp"
+
+
+
+# 1. Capture 5 frames at 1280x720 NV12 from /dev/video11
+v4l2-ctl -d /dev/video11 --set-fmt-video=width=1280,height=720,pixelformat=NV12 --stream-mmap --stream-count=5 --stream-to=/tmp/test_720p.yuv
+
+# 2. Check the file size (5 frames * 1,382,400 = exact 6,912,000 bytes / 6.6M)
+ls -lh /tmp/test_720p.yuv
+
+scp root@169.254.100.1:/tmp/test_720p.yuv ~/Desktop/test_720p.yuv
+ffplay -f rawvideo -pixel_format nv12 -video_size 1280x720 ~/Desktop/test_720p.yuv
+
+
+
+
+# On the RV1106 board:
+vtx -w 1280 -h 720 -b 2400 -f 60 -c 265
+
+
+git --no-pager diff upstream/main...HEAD > my_changes.diff
+
+
+
+scp root@169.254.100.1:/tmp/test_synthetic.h264 ~/Desktop/
+ffplay ~/Desktop/test_synthetic.h264
+
+
+
+NEW_YOCTO="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/deploy/images/luckfox-pico-zero"
+rkdeveloptool db "$NEW_YOCTO/download.bin" && \
+rkdeveloptool wl 0 "$NEW_YOCTO/core-image-minimal-luckfox-pico-zero.rootfs.wic" && \
+rkdeveloptool rd
+
+
+
+
+
+mpi_enc_test -w 1280 -h 720 -t 16777218 -f 0 -n 30 -o /tmp/test_synthetic.h264
+ls -lh /tmp/test_synthetic.h264
+# On your Mac terminal:
+scp root@169.254.100.1:/tmp/test_synthetic.h264 ~/Desktop/test_synthetic.h264
+ffplay ~/Desktop/test_synthetic.h264
+
+# On your RV1106 board:
+mpi_enc_test -w 1280 -h 720 -t 16777220 -f 0 -n 30 -o /tmp/test_synthetic.hevc
+ls -lh /tmp/test_synthetic.hevc
+Mac:
+scp root@169.254.100.1:/tmp/test_synthetic.hevc ~/Desktop/test_synthetic.hevc
+ffplay -f hevc ~/Desktop/test_synthetic.hevc
+
+
+
+PKG_DIR="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi"
+
+# 1. Copy the updated MPP & VPU libraries
+scp "$PKG_DIR"/rockchip-mpp/*/packages-split/rockchip-mpp/usr/lib/lib* \
+    "$PKG_DIR"/rockchip-mpp/*/packages-split/rockchip-mpp-vpu/usr/lib/lib* \
+    root@169.254.100.1:/usr/lib/
+
+# 2. Copy mpi_enc_test and vtx
+scp "$PKG_DIR"/rockchip-mpp/*/packages-split/rockchip-mpp-demos/usr/bin/mpi_enc_test root@169.254.100.1:/usr/bin/mpi_enc_test
+scp "$PKG_DIR"/luckfox-vtx/*/packages-split/luckfox-vtx/usr/bin/vtx root@169.254.100.1:/usr/bin/vtx
+
+# 3. Reload library cache on the board
+ssh root@169.254.100.1 "ldconfig 2>/dev/null || true"
+
+
+
+
+
+killall -9 arduplane 2>/dev/null
+
+
+
+/usr/bin/arduplane  --serial0 tcp:0.0.0.0:5760:wait  --log-directory /tmp
+
+# on K 6.6
+export hal_h265e_debug=0x40
+mpi_enc_test -w 1280 -h 720 -t 16777220 -f 0 -n 1 -o /tmp/frame0.hevc
+cat reg_cfg_set.txt > /tmp/regs_66.txt
+
+# On the stock 5.10 Luckfox system:
+dmesg -c > /dev/null
+echo 1 > /sys/module/mpp_vcodec/parameters/mpp_dev_debug
+mpi_enc_test -w 1280 -h 720 -t 16777220 -f 0 -n 1 -o /tmp/frame0_stock.hevc
+dmesg | grep "write reg" > /tmp/regs_510.txt
+
+diff -y -W 120 /tmp/regs_510.txt /tmp/regs_66.txt
+
+
+
+head -n 20 /sys/module/mpp_vcodec/parameters/* 2>/dev/null
+echo "=== 1. Enable hal_h265e_debug in the kernel ==="
+echo 0xff > /sys/module/mpp_vcodec/parameters/hal_h265e_debug
+
+echo "=== 2. Clear dmesg and encode 1 frame ==="
+dmesg -c > /dev/null
+mpi_enc_test -w 1280 -h 720 -t 16777220 -f 0 -n 1 -o /tmp/frame0_stock.hevc
+
+echo "=== 3. Check for register dump in dmesg or disk ==="
+dmesg | grep -i "reg" | head -n 40
+ls -l /tmp/reg* reg* 2>/dev/null || echo "No reg files on disk"
+
+
+
+
+DEVICE=$(ls -1 /dev/cu.usbmodem* 2>/dev/null | head -n 1)
+stty -f "$DEVICE" raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
+
+cat "$DEVICE" | ffplay \
+  -probesize 32 \
+  -analyzeduration 0 \
+  -fflags nobuffer \
+  -flags low_delay \
+  -framedrop \
+  -f hevc \
+  -framerate 60 \
+  -i -
+
+
+  cat "$DEVICE" | mpv - \
+  --demuxer-lavf-format=hevc \
+  --demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer \
+  --no-correct-pts \
+  --container-fps-override=60 \
+  --profile=low-latency \
+  --no-cache \
+  --untimed \
+  --framedrop=vo

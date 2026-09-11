@@ -34,6 +34,7 @@ index 266fb0772d89..2be7cb56f981 100644
  #ifdef CONFIG_CPU_RK3528
  	{
  		.compatible = "rockchip,rkv-encoder-rk3528",
+ 		.data = &rkvenc_540c_data,
+ 	},
 -- 
-2.53.0
-
+2.43.0

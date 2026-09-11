@@ -20,6 +20,7 @@ UPSTREAM_CHECK_COMMITS = "1"
 SRC_URI = "git://github.com/rockchip-linux/mpp;protocol=https;branch=develop \
            file://0001-mpp_soc-hal-add-rv1106-and-rv1103-encoder-only-SoC-s.patch \
            file://0004-osal-allocator-dma_heap-force-CMA-heap-no-IOMMU-SoCs.patch \
+           file://0005-h265e_api-set-rv1106-rv1103-max-cu-size-32.patch \
            "
 
 inherit pkgconfig cmake
