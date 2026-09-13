@@ -7,8 +7,8 @@ cd "$SCRIPT_DIR"
 NATIVE_SYSROOT="${SCRIPT_DIR}/build/tmp/work/luckfox_pico_zero-oe-linux-gnueabi/rockchip-rkaiq/1.0/recipe-sysroot-native"
 TARGET_SYSROOT="${SCRIPT_DIR}/build/tmp/work/luckfox_pico_zero-oe-linux-gnueabi/rockchip-rkaiq/1.0/recipe-sysroot"
 CC="${NATIVE_SYSROOT}/usr/bin/arm-oe-linux-gnueabi/arm-oe-linux-gnueabi-gcc"
-MPP_INC="${SCRIPT_DIR}/build/tmp/sysroots-components/cortexa7t2hf-neon-vfpv4/rockchip-mpp/usr/include"
-MPP_LIB="${SCRIPT_DIR}/build/tmp/sysroots-components/cortexa7t2hf-neon-vfpv4/rockchip-mpp/usr/lib"
+MPP_INC="${SCRIPT_DIR}/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/recipe-sysroot/usr/include"
+MPP_LIB="${SCRIPT_DIR}/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/recipe-sysroot/usr/lib"
 
 export PATH="${NATIVE_SYSROOT}/usr/bin/arm-oe-linux-gnueabi:${NATIVE_SYSROOT}/usr/bin:${PATH}"
 

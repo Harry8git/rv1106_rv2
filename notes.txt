@@ -65,7 +65,6 @@ ssh root@169.254.100.1
 ip addr del 172.32.0.93/16 dev usb0
 ip addr add 169.254.100.1/16 dev usb0
 
-source ~/rv1106-yocto/openembedded-core/oe-init-build-env build
 cd ~/rv2 || exit 1
 source openembedded-core/oe-init-build-env build
 bitbake core-image-minimal
@@ -237,3 +236,44 @@ cat "$DEVICE" | ffplay \
   --no-cache \
   --untimed \
   --framedrop=vo
+
+
+
+
+  DEVICE=$(ls -1 /dev/cu.usbmodem* 2>/dev/null | head -n 1)
+stty -f "$DEVICE" raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
+
+cat "$DEVICE" | ffplay \
+  -probesize 32768 \
+  -analyzeduration 0 \
+  -fflags nobuffer \
+  -flags low_delay \
+  -flags2 +showall \
+  -err_detect ignore_err \
+  -vf setpts=0 \
+  -sync ext \
+  -framedrop \
+  -f hevc \
+  -i -
+
+
+
+
+  scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/rockchip-mpp/1.0+git/image/usr/lib/librockchip_mpp.so.1* root@169.254.100.1:/usr/lib/
+
+
+
+
+  scp "/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/rockchip-mpp/1.0+git/build/mpp/librockchip_mpp.so."* root@169.254.100.1:/usr/lib/
+
+
+
+
+  cd ~/rv2
+
+bitbake -c clean luckfox-vtx
+bitbake luckfox-vtx
+scp ~/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx root@169.254.100.1:/usr/bin/vtx
+
+
+

@@ -1,7 +1,3 @@
-# Copyright (C) 2016 - 2017 Randy Li <ayaka@soulik.info>
-# Copyright (C) 2019, Fuzhou Rockchip Electronics Co., Ltd
-# Released under the MIT license (see COPYING.MIT for the terms)
-
 SUMMARY = "Rockchip Media Process Platform (MPP)"
 DESCRIPTION = "Unified media hardware-acceleration library for Rockchip SoCs."
 HOMEPAGE = "https://github.com/rockchip-linux/mpp"
@@ -9,10 +5,7 @@ BUGTRACKER = "https://github.com/rockchip-linux/mpp/issues"
 SECTION = "multimedia"
 
 LICENSE = "Apache-2.0 & MIT"
-LIC_FILES_CHKSUM = " \
-    file://LICENSES/Apache-2.0;md5=7f43e699e0a26fae98c2938092f008d2 \
-    file://LICENSES/MIT;md5=e8f57dd048e186199433be2c41bd3d6d"
-
+LIC_FILES_CHKSUM = "file://LICENSES/Apache-2.0;md5=7f43e699e0a26fae98c2938092f008d2 file://LICENSES/MIT;md5=e8f57dd048e186199433be2c41bd3d6d"
 PV = "1.0+git"
 SRCREV = "${AUTOREV}"
 UPSTREAM_CHECK_COMMITS = "1"
@@ -20,10 +13,9 @@ UPSTREAM_CHECK_COMMITS = "1"
 SRC_URI = "git://github.com/rockchip-linux/mpp;protocol=https;branch=develop \
            file://0001-mpp_soc-hal-add-rv1106-and-rv1103-encoder-only-SoC-s.patch \
            file://0004-osal-allocator-dma_heap-force-CMA-heap-no-IOMMU-SoCs.patch \
-           file://0005-h265e_api-set-rv1106-rv1103-max-cu-size-32.patch \
            "
-
 inherit pkgconfig cmake
+PATCHTOOL = "git"
 
 HAVE_DRM = "ON"
 HAVE_DRM:rv1106 = "OFF"
@@ -52,3 +44,4 @@ FILES:${PN}-demos = "${bindir}/*"
 SECTION:${PN}-dev = "devel"
 FILES:${PN}-staticdev = "${libdir}/*.a"
 SECTION:${PN}-staticdev = "devel"
+

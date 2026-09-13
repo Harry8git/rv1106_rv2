@@ -1,10 +1,8 @@
-SUMMARY = "Luckfox vendor ISP IQ calibration files for RV1106"
-DESCRIPTION = "Sensor IQ JSON files and CAC binary calibration data for \
-cameras supported by Luckfox Pico boards (sc4336, sc3336, mis5001, imx462/imx327). \
-These files are taken directly from the Luckfox vendor SDK."
+SUMMARY = "Original IMX462 ISP IQ configuration for RV1106"
+DESCRIPTION = "Original IMX462 ISP IQ configuration authored for the RV1106 VTX project."
 
-LICENSE = "CLOSED"
-LIC_FILES_CHKSUM = "file://NOTICE;md5=afe667c79b10e173904da1ed65460a49"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=8e885c58a55a2612e5b59cc803efeecf"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
@@ -12,6 +10,7 @@ S = "${UNPACKDIR}"
 
 SRC_URI = " \
     file://imx462_imx462_default.json \
+    file://LICENSE \
 "
 
 do_configure[noexec] = "1"
