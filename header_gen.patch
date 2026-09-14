@@ -1,0 +1,21 @@
+diff --git a/mpp/codec/enc/h265/h265e_header_gen.c b/mpp/codec/enc/h265/h265e_header_gen.c
+index 99a2a41d2..d1e1f1a01 100644
+--- a/mpp/codec/enc/h265/h265e_header_gen.c
++++ b/mpp/codec/enc/h265/h265e_header_gen.c
+@@ -132,7 +132,7 @@ static MPP_RET h265e_write_recovery_point(H265eStream * s, RK_U32 recovery_frame
+     h265e_stream_write_se_with_log(s, recovery_frame_cnt, NULL);
+     h265e_stream_write1_with_log(s, 1, NULL);
+     h265e_stream_write1_with_log(s, 0, NULL);
+-    h265e_stream_rbsp_trailing(s);
++    h265e_stream_realign(s);
+     return MPP_OK;
+ }
+ 
+@@ -183,7 +183,6 @@ static MPP_RET h265e_sei_write(H265eStream *s, RK_U8 uuid[16], const RK_U8 *payl
+             h265e_stream_write_with_log(s, uuid[i], 8, NULL);
+         for (i = 0; i < data_len; i++)
+             h265e_stream_write_with_log(s, (RK_U32) payload[i], 8, NULL);
+-        h265e_stream_rbsp_trailing(s);
+     } break;
+     case H265_SEI_RECOVERY_POINT: {
+         h265e_write_recovery_point(s, ((RK_U32 *)payload)[0]);

@@ -1,22 +1,10 @@
-From 30b8d33834e4e926cd9818684e29279c45c8d38a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Harry Spencer <harry8@gmail.com>
 Date: Fri, 11 Sep 2026 21:00:00 -0700
-Subject: [PATCH] mpp: add RV1103/RV1106 support, hardware GIR, CU32, and live
- stream fixes
+Subject: [PATCH] mpp: add RV1103/RV1106 support, hardware GIR, CU32, and live stream fixes
 
 Upstream-Status: Pending
 ---
- mpp/codec/enc/h265/h265e_api.c           |  2 +
- mpp/codec/enc/h265/h265e_dpb.c           |  2 +-
- mpp/codec/enc/h265/h265e_header_gen.c    |  3 +-
- mpp/codec/enc/h265/h265e_ps.c            | 13 +++---
- mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c |  2 +
- mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c | 56 +++++++++++++++++++++---
- mpp/hal/rkenc/jpege/hal_jpege_vepu540c.c |  2 +
- osal/inc/mpp_soc.h                       |  2 +
- osal/mpp_soc.c                           | 24 ++++++++++
- 9 files changed, 90 insertions(+), 16 deletions(-)
-
 diff --git a/mpp/codec/enc/h265/h265e_api.c b/mpp/codec/enc/h265/h265e_api.c
 index 1637782e3..27cc9d30b 100644
 --- a/mpp/codec/enc/h265/h265e_api.c
@@ -30,33 +18,8 @@ index 1637782e3..27cc9d30b 100644
          soc_type == ROCKCHIP_SOC_RK3576 ||
          soc_type == ROCKCHIP_SOC_RV1126B ||
          soc_type == ROCKCHIP_SOC_RK3572)
-diff --git a/mpp/codec/enc/h265/h265e_dpb.c b/mpp/codec/enc/h265/h265e_dpb.c
-index b033cb823..ef558495c 100644
---- a/mpp/codec/enc/h265/h265e_dpb.c
-+++ b/mpp/codec/enc/h265/h265e_dpb.c
-@@ -621,7 +621,7 @@ void h265e_dpb_cpb2rps(H265eDpb *dpb, RK_S32 curPoc, H265eSlice *slice, EncCpbSt
  
-         p = h265e_find_cpb_frame(dpb->frame_list, MAX_REFS, frm);
-         if (p) {
--            if (!frm->is_lt_ref) {
-+            if (1) { /* Always use short-term N-1 references for FPV */
-                 p->status.val = frm->val;
-                 rps->delta_poc[idx_rps] = p->poc - curPoc;
-                 rps->m_used[idx_rps] = 1;
-diff --git a/mpp/codec/enc/h265/h265e_header_gen.c b/mpp/codec/enc/h265/h265e_header_gen.c
-index 99a2a41d2..739e33949 100644
---- a/mpp/codec/enc/h265/h265e_header_gen.c
-+++ b/mpp/codec/enc/h265/h265e_header_gen.c
-@@ -132,7 +132,7 @@ static MPP_RET h265e_write_recovery_point(H265eStream * s, RK_U32 recovery_frame
-     h265e_stream_write_se_with_log(s, recovery_frame_cnt, NULL);
-     h265e_stream_write1_with_log(s, 1, NULL);
-     h265e_stream_write1_with_log(s, 0, NULL);
--    h265e_stream_rbsp_trailing(s);
-+    h265e_stream_realign(s);
-     return MPP_OK;
- }
- 
-@@ -183,7 +183,6 @@ static MPP_RET h265e_sei_write(H265eStream *s, RK_U8 uuid[16], const RK_U8 *payl
+@@ -183,7 +184,6 @@ static MPP_RET h265e_sei_write(H265eStream *s, RK_U8 uuid[16], const RK_U8 *payl
              h265e_stream_write_with_log(s, uuid[i], 8, NULL);
          for (i = 0; i < data_len; i++)
              h265e_stream_write_with_log(s, (RK_U32) payload[i], 8, NULL);
@@ -65,7 +28,7 @@ index 99a2a41d2..739e33949 100644
      case H265_SEI_RECOVERY_POINT: {
          h265e_write_recovery_point(s, ((RK_U32 *)payload)[0]);
 diff --git a/mpp/codec/enc/h265/h265e_ps.c b/mpp/codec/enc/h265/h265e_ps.c
-index 380245d55..91cc1080b 100644
+index 380245d55..37d56dd74 100644
 --- a/mpp/codec/enc/h265/h265e_ps.c
 +++ b/mpp/codec/enc/h265/h265e_ps.c
 @@ -320,12 +320,11 @@ MPP_RET h265e_set_sps(H265eCtx *ctx, H265eSps *sps, H265eVps *vps)
@@ -109,14 +72,14 @@ index 7b91cac37..619920321 100644
      },
  };
 diff --git a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
-index fc8d7e283..82549877d 100644
+index fc8d7e283..06c619928 100644
 --- a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
 +++ b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
-@@ -1209,6 +1209,46 @@ static void vepu540c_h265_set_split(H265eV540cRegSet *regs, MppEncCfgSet *enc_cf
+@@ -1209,6 +1209,59 @@ static void vepu540c_h265_set_split(H265eV540cRegSet *regs, MppEncCfgSet *enc_cf
      hal_h265e_dbg_func("leave\n");
  }
  
-+static MPP_RET setup_vepu540c_intra_refresh(H265eV540cRegSet *regs, H265eV540cHalContext *ctx, RK_U32 frame_idx)
++static MPP_RET setup_vepu540c_intra_refresh(H265eV540cRegSet *regs, H265eV540cHalContext *ctx, RK_U32 refresh_idx)
 +{
 +    RK_U32 h = ctx->cfg->prep.height;
 +    RK_U32 w = ctx->cfg->prep.width;
@@ -132,34 +95,47 @@ index fc8d7e283..82549877d 100644
 +    roi.number = 1;
 +    roi.regions = &region;
 +
-+    RK_U32 blocks_per_frame = ctx->cfg->rc.refresh_num ? ctx->cfg->rc.refresh_num : 4;
-+    RK_U32 box_w = blocks_per_frame * 32;
-+    RK_U32 box_h = 32;
-+    RK_U32 steps_x = (w + box_w - 1) / box_w;
-+    RK_U32 steps_y = (h + box_h - 1) / box_h;
-+    RK_U32 total_steps = steps_x * steps_y;
-+    RK_U32 step_idx = total_steps ? (frame_idx % total_steps) : 0;
-+
-+    region.x = (step_idx % steps_x) * box_w;
-+    region.y = (step_idx / steps_x) * box_h;
-+    region.w = box_w;
-+    region.h = box_h;
-+    if (region.x + region.w > w)
-+        region.w = w - region.x;
-+    if (region.y + region.h > h)
-+        region.h = h - region.y;
++    if (ctx->cfg->rc.refresh_mode == MPP_ENC_RC_INTRA_REFRESH_ROW) {
++        region.x = 0;
++        region.w = w;
++        if (refresh_idx > 0) {
++            region.y = (refresh_idx * 32 * ctx->cfg->rc.refresh_num > 64) ?
++                       (refresh_idx * 32 * ctx->cfg->rc.refresh_num - 64) : 0;
++            region.h = 32 * ctx->cfg->rc.refresh_num + 64;
++        } else {
++            region.y = 0;
++            region.h = 32 * ctx->cfg->rc.refresh_num;
++        }
++        if (region.y + region.h > h)
++            region.h = h - region.y;
++    } else {
++        region.y = 0;
++        region.h = h;
++        if (refresh_idx > 0) {
++            region.x = (refresh_idx * 32 * ctx->cfg->rc.refresh_num > 64) ?
++                       (refresh_idx * 32 * ctx->cfg->rc.refresh_num - 64) : 0;
++            region.w = 32 * ctx->cfg->rc.refresh_num + 64;
++        } else {
++            region.x = 0;
++            region.w = 32 * ctx->cfg->rc.refresh_num;
++        }
++        if (region.x + region.w > w)
++            region.w = w - region.x;
++    }
 +
 +    region.intra = 1;
 +    region.quality = 0;
 +    region.abs_qp_en = 0;
++
 +    vepu540c_set_roi(&regs->reg_rc_roi.roi_cfg, &roi, w, h);
++
 +    return MPP_OK;
 +}
 +
  MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
  {
      H265eV540cHalContext *ctx = (H265eV540cHalContext *)hal;
-@@ -1224,8 +1264,8 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
+@@ -1224,8 +1278,8 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
  
      hal_h265e_enter();
      hal_dbg_setup(ctx->dbg_ctx, NULL);
@@ -170,7 +146,7 @@ index fc8d7e283..82549877d 100644
      pic_wd32 = (syn->pp.pic_width +  31) / 32;
      pic_h32 = (syn->pp.pic_height + 31) / 32;
  
-@@ -1280,11 +1320,9 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
+@@ -1280,11 +1334,9 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
      reg_ctl->common.func_en.enc_done_tmvp_en   = 1;
  
      reg_base->common.enc_rsl.pic_wd8_m1    = pic_width_align8 / 8 - 1;
@@ -184,18 +160,20 @@ index fc8d7e283..82549877d 100644
  
      reg_base->common.enc_pic.enc_stnd      = 1; //H265
      reg_base->common.enc_pic.cur_frm_ref   = !syn->sp.non_reference_flag; //current frame will be refered
-@@ -1334,6 +1372,10 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
+@@ -1334,6 +1386,12 @@ MPP_RET hal_h265e_v540c_gen_regs(void *hal, HalEncTask *task)
      if (ctx->roi_data)
          vepu540c_set_roi(&regs->reg_rc_roi.roi_cfg, ctx->roi_data,
                           ctx->cfg->prep.width, ctx->cfg->prep.height);
-+    if (ctx->cfg->rc.refresh_en && !task->rc_task->frm.is_intra) {
++
++    {
 +        EncFrmStatus *frm_status = &task->rc_task->frm;
-+        setup_vepu540c_intra_refresh(regs, ctx, frm_status->seq_idx);
++        if (frm_status->is_i_refresh)
++            setup_vepu540c_intra_refresh(regs, ctx, frm_status->seq_idx % ctx->cfg->rc.gop);
 +    }
      /*paramet cfg*/
      vepu540c_h265_global_cfg_set(ctx, regs);
  
-@@ -1682,6 +1724,8 @@ const MppEncHalApi hal_h265e_vepu540c = {
+@@ -1682,6 +1740,8 @@ const MppEncHalApi hal_h265e_vepu540c = {
      .client     = VPU_CLIENT_RKVENC,
      .soc_type   = {
          ROCKCHIP_SOC_RK3528,
@@ -265,6 +243,3 @@ index c146e5570..9156788aa 100644
  };
  
  static const MppSocInfo mpp_soc_default = {
--- 
-2.43.0
-

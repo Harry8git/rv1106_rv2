@@ -9,6 +9,7 @@ LIC_FILES_CHKSUM = "file://LICENSES/Apache-2.0;md5=7f43e699e0a26fae98c2938092f00
 PV = "1.0+git"
 SRCREV = "${AUTOREV}"
 UPSTREAM_CHECK_COMMITS = "1"
+PATCHTOOL = "git"
 
 SRC_URI = "git://github.com/rockchip-linux/mpp;protocol=https;branch=develop \
            file://0001-mpp_soc-hal-add-rv1106-and-rv1103-encoder-only-SoC-s.patch \

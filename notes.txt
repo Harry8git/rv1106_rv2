@@ -154,7 +154,7 @@ ffplay ~/Desktop/test_synthetic.h264
 mpi_enc_test -w 1280 -h 720 -t 16777220 -f 0 -n 30 -o /tmp/test_synthetic.hevc
 ls -lh /tmp/test_synthetic.hevc
 Mac:
-scp root@169.254.100.1:/tmp/test_synthetic.hevc ~/Desktop/test_synthetic.hevc
+scp root@169.254.100.1:/tmp/stream.h265 ~/Downloads/stream.h265 
 ffplay -f hevc ~/Desktop/test_synthetic.hevc
 
 
@@ -273,7 +273,22 @@ cat "$DEVICE" | ffplay \
 
 bitbake -c clean luckfox-vtx
 bitbake luckfox-vtx
-scp ~/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx root@169.254.100.1:/usr/bin/vtx
 
+
+
+cd ~/rv2
+bitbake -c compile -f luckfox-vtx
+cp build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx apps/vtx
+
+scp ~/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx root@169.254.100.1:/usr/bin/vtx
+
+
+bitbake rockchip-mpp
+
+
+
+mpi_enc_test -w 1280 -h 720 -t 16777220 -n 500 -fps 60 -v f -o /tmp/enc_test.h265
+
+./sync-mpp.sh
 
 
