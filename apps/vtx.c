@@ -1,7 +1,7 @@
 /*
  * Dedicated Low-Latency 720p60 USB CDC Streamer (VTX)
  * Pure N-1 Short-Term Reference Pipeline with GIR (128x32 Intra Box)
- * Infinite GOP (rc:gop = 0) with periodic header resync for mid-stream decoders
+ * Infinite GOP (rc:gop = 65536) with periodic header resync for mid-stream decoders
  */
 
 #define _GNU_SOURCE
@@ -67,9 +67,6 @@ typedef struct {
     CamBuffer       buffers[MAX_V4L2_BUFFERS];
     uint32_t        buf_count;
 
-    struct v4l2_buffer saved_buf[MAX_V4L2_BUFFERS];
-    struct v4l2_plane  saved_planes[MAX_V4L2_BUFFERS][1];
-
     MppCtx          mpp_ctx;
     MppApi         *mpi;
     MppEncCfg       enc_cfg;
@@ -117,10 +114,14 @@ static inline int cdc_write_all(int fd, const uint8_t *buf, size_t len) {
         int ret = poll(&pfd, 1, 10);
         if (ret < 0) {
             if (errno == EINTR) continue;
+            fprintf(stderr, ">>> CDC ERROR: poll failed: %s <<<\n", strerror(errno));
             return -1;
         }
         if (ret == 0) {
-            if (++retry > 50) return -1;
+            if (++retry > 50) {
+                fprintf(stderr, ">>> CDC TIMEOUT: Dropped %zu bytes <<<\n", len - total_written);
+                return -1;
+            }
             continue;
         }
         retry = 0;
@@ -128,6 +129,7 @@ static inline int cdc_write_all(int fd, const uint8_t *buf, size_t len) {
         ssize_t n = write(fd, buf + total_written, len - total_written);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            fprintf(stderr, ">>> CDC ERROR: write failed: %s <<<\n", strerror(errno));
             return -1;
         }
         total_written += (size_t)n;
@@ -156,6 +158,7 @@ static void *camera_capture_thread(void *arg) {
     uint32_t hor_stride = MPP_ALIGN(ctx->cfg.width, 16);
     uint32_t ver_stride = MPP_ALIGN(ctx->cfg.height, 16);
     uint32_t cap_cnt = 0;
+    static uint32_t last_seq = 0;
 
     while (!quit) {
         struct pollfd pfd = { .fd = ctx->v4l2_fd, .events = POLLIN };
@@ -181,13 +184,14 @@ static void *camera_capture_thread(void *arg) {
             continue;
         }
 
-        uint32_t idx = buf.index;
-
-        ctx->saved_buf[idx] = buf;
-        if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-            ctx->saved_planes[idx][0] = planes[0];
-            ctx->saved_buf[idx].m.planes = ctx->saved_planes[idx];
+        /* Check for skipped or dropped camera frames */
+        if (last_seq != 0 && buf.sequence != last_seq + 1) {
+            fprintf(stderr, ">>> CAMERA DROP: missed %u frame(s)! (seq %u vs %u) <<<\n",
+                    buf.sequence - (last_seq + 1), buf.sequence, last_seq + 1);
         }
+        last_seq = buf.sequence;
+
+        uint32_t idx = buf.index;
 
         MppFrame frame = NULL;
         mpp_frame_init(&frame);
@@ -207,7 +211,13 @@ static void *camera_capture_thread(void *arg) {
             ctx->fifo_head = (ctx->fifo_head + 1) % MAX_V4L2_BUFFERS;
             pthread_mutex_unlock(&ctx->fifo_lock);
         } else {
-            /* Immediate requeue if rejected to prevent dropping buffer from ring */
+            /* Immediate requeue if rejected */
+            if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+                planes[0].m.fd = ctx->buffers[idx].dma_fd;
+                planes[0].length = ctx->buffers[idx].length;
+            } else {
+                buf.m.fd = ctx->buffers[idx].dma_fd;
+            }
             xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf);
         }
 
@@ -235,10 +245,21 @@ static void *venc_tx_thread(void *arg) {
     }
     set_serial_raw(ctx->cdc_fd);
 
-    /* Send initial sequence headers */
-    if (ctx->hdr_len > 0) {
-        cdc_write_all(ctx->cdc_fd, ctx->hdr_buf, ctx->hdr_len);
+    /* Start camera capture - camera_capture_thread begins ingesting */
+    enum v4l2_buf_type type = ctx->buf_type;
+    if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) {
+        fprintf(stderr, "ERROR: VIDIOC_STREAMON failed\n");
+        quit = true;
+        return NULL;
     }
+
+    /* 
+     * The 100ms Handshake & Pre-fill:
+     * 1. Lets macOS CDC ACM acknowledge the open connection.
+     * 2. Lets camera_capture_thread capture and submit Frame 0 to MPP.
+     * When tx_thd wakes up, Packet 0 (IDR) is ready in MPP's output queue.
+     */
+    usleep(50000);
 
     printf(">>> VTX ACTIVE: 60 FPS Pipelined H.265 Streaming to %s <<<\n", ctx->cfg.cdc_dev);
 
@@ -260,11 +281,11 @@ static void *venc_tx_thread(void *arg) {
 
             if (ptr && len > 0) {
                 /*
-                 * Periodically resend VPS/SPS/PPS (every 60 frames = 1 second)
-                 * This allows mid-stream decoders (like ffplay on Mac) to lock on
+                 * Resend VPS/SPS/PPS on Frame 0 and every 30 frames (~0.5s)
+                 * Allows mid-stream decoders (like ffplay on Mac) to lock on
                  * immediately without waiting for an IDR frame.
                  */
-                if (frame_cnt % 60 == 0 && ctx->hdr_len > 0) {
+                if ((frame_cnt == 0 || frame_cnt % 30 == 0) && ctx->hdr_len > 0) {
                     cdc_write_all(ctx->cdc_fd, ctx->hdr_buf, ctx->hdr_len);
                     total_bytes += ctx->hdr_len;
                 }
@@ -403,9 +424,6 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
         if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) return -1;
     }
 
-    enum v4l2_buf_type type = ctx->buf_type;
-    if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
-
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
 
@@ -432,14 +450,14 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_num", ctx->cfg.fps);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_denorm", 1);
 
-    /* rc:gop = 0: Initial IDR frame followed by 100% P-frames forever */
+    /* Infinite GOP: 1 initial IDR frame, then continuous P-frames */
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:gop", ctx->cfg.gop);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:max_reenc_times", 0);
 
     /* Hardware GIR: 128x32 Intra Box (refresh_num = 4 -> 4 * 32 = 128) */
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_en", 1);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_mode", 0);
-    mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_num", 4);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_num", 11);
 
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "codec:type", ctx->cfg.codec_type);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:profile", 1);
@@ -511,6 +529,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
+    /* Spawn capture thread first, then tx thread (which turns on STREAMON and does 100ms settle) */
     pthread_create(&ctx.cap_thd, NULL, camera_capture_thread, &ctx);
     pthread_create(&ctx.tx_thd, NULL, venc_tx_thread, &ctx);
 
