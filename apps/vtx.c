@@ -39,7 +39,7 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   6
+#define MAX_V4L2_BUFFERS   2
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 typedef struct {
