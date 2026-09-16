@@ -24,3 +24,4 @@ do_install:append() {
 
 SYSTEMD_SERVICE:${PN} = "wpa_supplicant@wlan0.service"
 SYSTEMD_AUTO_ENABLE = "enable"
+DEPENDS:remove = "dbus"

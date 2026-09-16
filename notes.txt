@@ -86,6 +86,7 @@ cat "$DEV" | ffplay -fflags nobuffer -flags low_delay -framedrop -f hevc -i -
 
 
 ssh-keygen -R 169.254.100.1
+ssh-keygen -R 192.168.1.225
 
 
 
@@ -243,7 +244,7 @@ cat "$DEVICE" | ffplay \
   DEVICE=$(ls -1 /dev/cu.usbmodem* 2>/dev/null | head -n 1)
 stty -f "$DEVICE" raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
 cat "$DEVICE" | ffplay \
-  -probesize 32768 \
+  -probesize 32 \
   -analyzeduration 0 \
   -fflags nobuffer \
   -flags low_delay \
@@ -294,40 +295,39 @@ mpi_enc_test -w 1280 -h 720 -t 16777220 -n 500 -fps 60 -v f -o /tmp/enc_test.h26
 
 
 
+DEVICE=$(ls -1 /dev/cu.usbmodem* 2>/dev/null | head -n 1)
+stty -f "$DEVICE" raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
+
 ffplay \
-  -probesize 32768 \
+  -probesize 32 \
   -analyzeduration 0 \
   -fflags nobuffer \
   -flags low_delay \
   -flags2 +showall \
   -err_detect ignore_err \
+  -threads 1 \
+  -an -sn \
   -vf setpts=0 \
   -sync ext \
+  -framedrop \
   -f hevc \
   -i "$DEVICE"
 
 
-  cat "$DEVICE" | ffplay \
-  -probesize 32768 \
-  -analyzeduration 0 \
-  -fflags nobuffer \
-  -flags low_delay \
-  -flags2 +showall \
-  -err_detect ignore_err \
-  -f hevc \
-  -i -
 
-
-
-
-
-
-
-
-
-
-
-
+mpv "$DEVICE" \
+  --demuxer-lavf-format=hevc \
+  --demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer \
+  --vd-lavc-o=flags=low_delay,flags2=+showall,err_detect=ignore_err \
+  --vd-lavc-threads=1 \
+  --profile=low-latency \
+  --untimed \
+  --no-cache \
+  --no-correct-pts \
+  --container-fps-override=60 \
+  --video-sync=desync \
+  --framedrop=vo \
+  --no-audio
 
 
 
