@@ -253,7 +253,7 @@ static void *venc_tx_thread(void *arg) {
         return NULL;
     }
 
-    /* 
+    /*
      * The 100ms Handshake & Pre-fill:
      * 1. Lets macOS CDC ACM acknowledge the open connection.
      * 2. Lets camera_capture_thread capture and submit Frame 0 to MPP.
@@ -261,18 +261,28 @@ static void *venc_tx_thread(void *arg) {
      */
     usleep(50000);
 
-    printf(">>> VTX ACTIVE: 60 FPS Pipelined H.265 Streaming to %s <<<\n", ctx->cfg.cdc_dev);
-
     uint32_t frame_cnt = 0;
     size_t total_bytes = 0;
     struct timespec last_time, cur_time;
     clock_gettime(CLOCK_MONOTONIC, &last_time);
 
+    /* Tracks whether we are about to emit the first packet of a new frame.
+     * Reset to 1 whenever a frame completes, so header insertion fires
+     * exactly once per resync frame -- before its first slice, not at EOI. */
+    int first_pkt_of_frame = 1;
+
     while (!quit) {
         MppPacket packet = NULL;
-        MPP_RET ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
+        MPP_RET ret;
+        int frame_complete = 0;
 
-        if (ret == MPP_OK && packet) {
+        do {
+            packet = NULL;
+            ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
+
+            if (ret != MPP_OK || !packet)
+                break;
+
             void *ptr = mpp_packet_get_pos(packet);
             size_t len = mpp_packet_get_length(packet);
 
@@ -281,65 +291,76 @@ static void *venc_tx_thread(void *arg) {
 
             if (ptr && len > 0) {
                 /*
-                 * Resend VPS/SPS/PPS on Frame 0 and every 30 frames (~0.5s)
-                 * Allows mid-stream decoders (like ffplay on Mac) to lock on
-                 * immediately without waiting for an IDR frame.
+                 * Send VPS/SPS/PPS once per resync frame, BEFORE the first
+                 * slice of that frame. With split output there may be
+                 * multiple packets per frame; guarding on
+                 * first_pkt_of_frame ensures the header is written exactly
+                 * once, ahead of any slice payload, rather than landing in
+                 * the middle of the frame at EOI.
                  */
-                if ((frame_cnt == 0 || frame_cnt % 30 == 0) && ctx->hdr_len > 0) {
+                if (first_pkt_of_frame && ctx->hdr_len > 0 &&
+                    (frame_cnt == 0 || frame_cnt % 30 == 0)) {
                     cdc_write_all(ctx->cdc_fd, ctx->hdr_buf, ctx->hdr_len);
                     total_bytes += ctx->hdr_len;
                 }
 
                 cdc_write_all(ctx->cdc_fd, (const uint8_t *)ptr, len);
                 total_bytes += len;
+
+                /* We have emitted at least one slice of this frame. */
+                first_pkt_of_frame = 0;
             }
+
+            frame_complete = partition ? eoi : 1;
 
             mpp_packet_deinit(&packet);
 
-            int frame_complete = partition ? eoi : 1;
+        } while (!frame_complete && !quit);
 
-            if (frame_complete) {
-                pthread_mutex_lock(&ctx->fifo_lock);
-                int return_idx = ctx->fifo[ctx->fifo_tail];
-                ctx->fifo_tail = (ctx->fifo_tail + 1) % MAX_V4L2_BUFFERS;
-                pthread_mutex_unlock(&ctx->fifo_lock);
+        if (frame_complete) {
+            /* Prepare for the next frame's header decision. */
+            first_pkt_of_frame = 1;
 
-                struct v4l2_buffer ret_buf;
-                struct v4l2_plane ret_planes[1];
-                memset(&ret_buf, 0, sizeof(ret_buf));
-                memset(ret_planes, 0, sizeof(ret_planes));
+            pthread_mutex_lock(&ctx->fifo_lock);
+            int return_idx = ctx->fifo[ctx->fifo_tail];
+            ctx->fifo_tail = (ctx->fifo_tail + 1) % MAX_V4L2_BUFFERS;
+            pthread_mutex_unlock(&ctx->fifo_lock);
 
-                ret_buf.type = ctx->buf_type;
-                ret_buf.memory = V4L2_MEMORY_DMABUF;
-                ret_buf.index = return_idx;
+            struct v4l2_buffer ret_buf;
+            struct v4l2_plane ret_planes[1];
+            memset(&ret_buf, 0, sizeof(ret_buf));
+            memset(ret_planes, 0, sizeof(ret_planes));
 
-                if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-                    ret_planes[0].m.fd = ctx->buffers[return_idx].dma_fd;
-                    ret_planes[0].length = ctx->buffers[return_idx].length;
-                    ret_buf.m.planes = ret_planes;
-                    ret_buf.length = 1;
-                } else {
-                    ret_buf.m.fd = ctx->buffers[return_idx].dma_fd;
-                    ret_buf.length = ctx->buffers[return_idx].length;
-                }
+            ret_buf.type = ctx->buf_type;
+            ret_buf.memory = V4L2_MEMORY_DMABUF;
+            ret_buf.index = return_idx;
 
-                xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &ret_buf);
-                frame_cnt++;
-
-                if (frame_cnt % 60 == 0) {
-                    clock_gettime(CLOCK_MONOTONIC, &cur_time);
-                    double elapsed = (cur_time.tv_sec - last_time.tv_sec) +
-                                     (cur_time.tv_nsec - last_time.tv_nsec) / 1000000000.0;
-                    double real_fps = 60.0 / elapsed;
-
-                    printf(">>> VTX: %u frames | Real FPS: %.1f | Bitrate: %.1f Kbps <<<\n",
-                           frame_cnt, real_fps, (total_bytes * 8.0 / 1000.0) / elapsed);
-
-                    total_bytes = 0;
-                    last_time = cur_time;
-                    fflush(stdout);
-                }
+            if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+                ret_planes[0].m.fd = ctx->buffers[return_idx].dma_fd;
+                ret_planes[0].length = ctx->buffers[return_idx].length;
+                ret_buf.m.planes = ret_planes;
+                ret_buf.length = 1;
+            } else {
+                ret_buf.m.fd = ctx->buffers[return_idx].dma_fd;
+                ret_buf.length = ctx->buffers[return_idx].length;
             }
+
+            xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &ret_buf);
+            frame_cnt++;
+
+            /*if (frame_cnt % 60 == 0) {
+                clock_gettime(CLOCK_MONOTONIC, &cur_time);
+                double elapsed = (cur_time.tv_sec - last_time.tv_sec) +
+                                 (cur_time.tv_nsec - last_time.tv_nsec) / 1000000000.0;
+                double real_fps = 60.0 / elapsed;
+
+                printf(">>> VTX: %u frames | Real FPS: %.1f | Bitrate: %.1f Kbps <<<\n",
+                       frame_cnt, real_fps, (total_bytes * 8.0 / 1000.0) / elapsed);
+
+                total_bytes = 0;
+                last_time = cur_time;
+                fflush(stdout);
+            }*/
         } else {
             usleep(250);
         }
@@ -455,7 +476,7 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:max_reenc_times", 0);
 
     /* Hardware GIR: 128x32 Intra Box (refresh_num = 4 -> 4 * 32 = 128) */
-    mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_en", 1);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_en", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_mode", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_num", 11);
 
@@ -464,6 +485,18 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:scaling_list", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_luma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
+
+    /* Rate control tuning for lower latency (safe for RV1106) */
+    //mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:drop_mode", MPP_ENC_RC_DROP_FRM_DISABLED);
+    //mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:super_mode", MPP_ENC_RC_SUPER_FRM_NONE);
+    //mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:max_reenc_times", 0);
+
+    /* DO NOT USE these on RV1106: */
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 0);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);
+
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
     if (ret != MPP_OK) { fprintf(stderr, "MPP_ENC_SET_CFG failed: %d\n", ret); return -1; }
@@ -494,11 +527,35 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_SEI_CFG, &sei_mode);
 
     MppPacket hdr_pkt = NULL;
-    mpp_packet_init(&hdr_pkt, ctx->hdr_buf, sizeof(ctx->hdr_buf));
-    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_GET_HDR_SYNC, hdr_pkt);
-    if (ret == MPP_OK) {
-        ctx->hdr_len = mpp_packet_get_length(hdr_pkt);
+
+    ret = mpp_packet_init(&hdr_pkt, ctx->hdr_buf, sizeof(ctx->hdr_buf));
+    if (ret != MPP_OK) {
+        fprintf(stderr, "mpp_packet_init for header failed: %d\n", ret);
+        return -1;
     }
+
+    /* Required: tell MPP the output packet currently contains 0 bytes */
+    mpp_packet_set_length(hdr_pkt, 0);
+
+    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_GET_HDR_SYNC, hdr_pkt);
+
+    if (ret != MPP_OK) {
+        fprintf(stderr, "MPP_ENC_GET_HDR_SYNC failed: %d\n", ret);
+        ctx->hdr_len = 0;
+    } else {
+        ctx->hdr_len = mpp_packet_get_length(hdr_pkt);
+
+        fprintf(stderr, ">>> H.265 header: %zu bytes <<<\n", ctx->hdr_len);
+
+        if (ctx->hdr_len > 0) {
+            uint8_t *p = (uint8_t *)mpp_packet_get_pos(hdr_pkt);
+            fprintf(stderr,
+                    "Header bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                    p[0], p[1], p[2], p[3],
+                    p[4], p[5], p[6], p[7]);
+        }
+    }
+
     mpp_packet_deinit(&hdr_pkt);
 
     return 0;
@@ -530,8 +587,8 @@ int main(int argc, char **argv) {
     }
 
     /* Spawn capture thread first, then tx thread (which turns on STREAMON and does 100ms settle) */
+    pthread_create(&ctx.tx_thd, NULL, venc_tx_thread, &ctx);   
     pthread_create(&ctx.cap_thd, NULL, camera_capture_thread, &ctx);
-    pthread_create(&ctx.tx_thd, NULL, venc_tx_thread, &ctx);
 
     while (!quit) sleep(1);
 
