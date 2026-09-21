@@ -1,0 +1,141 @@
+From face72ab41e388e876c564f0cbe720451d461fd2 Mon Sep 17 00:00:00 2001
+From: Harry Spencer <harry8@gmail.com>
+Date: Sun, 20 Sep 2026 11:06:17 -0700
+Subject: [PATCH] mpp: add V540C low-delay slice output support
+
+Upstream-Status: Pending
+---
+ mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c | 75 +++++++++++++++++++++++-
+ 1 file changed, 73 insertions(+), 2 deletions(-)
+
+diff --git a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+index 82549877d..399ec4536 100644
+--- a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
++++ b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+@@ -27,6 +27,8 @@
+ #include "mpp_soc.h"
+ #include "mpp_common.h"
+ #include "mpp_frame_impl.h"
++#include "mpp_packet_impl.h"
++#include "mpp_enc_cb_param.h"
+ 
+ #include "hal_h265e_debug.h"
+ #include "h265e_syntax_new.h"
+@@ -94,6 +96,13 @@ typedef struct H265eV540cHalContext_t {
+     RK_U8               *dst_buf;
+     RK_S32              buf_size;
+     RK_U32              frame_num;
++
++    /* slice split poll cfg */
++    RK_S32              poll_slice_max;
++    RK_S32              poll_cfg_size;
++    MppDevPollCfg       *poll_cfgs;
++    MppCbCtx            *output_cb;
++
+     HalBufs             dpb_bufs;
+     RK_S32              fbc_header_len;
+     RK_U32              title_num;
+@@ -551,6 +560,19 @@ MPP_RET hal_h265e_v540c_init(void *hal, MppEncHalCfg *cfg)
+     }
+ 
+     ctx->dev = cfg->dev;
++
++    ctx->poll_slice_max = 8;
++    ctx->poll_cfg_size = (sizeof(ctx->poll_cfgs) + sizeof(RK_S32) * ctx->poll_slice_max) * 2;
++    ctx->poll_cfgs = mpp_malloc_size(MppDevPollCfg, ctx->poll_cfg_size);
++
++    if (NULL == ctx->poll_cfgs) {
++        mpp_err_f("init poll cfg buffer failed\n");
++        mpp_dev_deinit(ctx->dev);
++        ctx->dev = NULL;
++        return MPP_ERR_MALLOC;
++    }
++
++    ctx->output_cb = cfg->output_cb;
+     ctx->frame_type = INTRA_FRAME;
+ 
+     {   /* setup default hardware config */
+@@ -580,6 +602,7 @@ MPP_RET hal_h265e_v540c_deinit(void *hal)
+ 
+     hal_h265e_enter();
+     hal_dbg_deinit(&ctx->dbg_ctx);
++    MPP_FREE(ctx->poll_cfgs);
+     MPP_FREE(ctx->regs);
+ 
+     MPP_FREE(ctx->reg_out);
+@@ -1603,6 +1626,13 @@ MPP_RET hal_h265e_v540c_wait(void *hal, HalEncTask *task)
+     H265eV540cHalContext *ctx = (H265eV540cHalContext *)hal;
+     HalEncTask *enc_task = task;
+     H265eV540cStatusElem *elem = (H265eV540cStatusElem *)ctx->reg_out;
++    MppPacket pkt = enc_task->packet;
++    RK_U32 split_out = ctx->cfg->split.split_out;
++    RK_U32 offset = mpp_packet_get_length(pkt);
++    RK_U32 seg_offset = offset;
++    H265eV540cRegSet *hw_regs = ctx->regs;
++    RK_U32 type = hw_regs->reg_base.reg0236_synt_nal.nal_unit_type;
++
+     hal_h265e_enter();
+ 
+     if (enc_task->flags.err) {
+@@ -1612,7 +1642,49 @@ MPP_RET hal_h265e_v540c_wait(void *hal, HalEncTask *task)
+         return MPP_NOK;
+     }
+ 
+-    ret = mpp_dev_ioctl(ctx->dev, MPP_DEV_CMD_POLL, NULL);
++    if (split_out) {
++        EncOutParam param;
++        RK_U32 slice_len = 0;
++        RK_U32 slice_last = 0;
++        MppDevPollCfg *poll_cfg = (MppDevPollCfg *)((char *)ctx->poll_cfgs);
++
++        param.task = task;
++        param.base = mpp_packet_get_data(task->packet);
++
++        do {
++            RK_S32 i = 0;
++
++            poll_cfg->poll_type = 0;
++            poll_cfg->poll_ret = 0;
++            poll_cfg->count_max =
++                (split_out & MPP_ENC_SPLIT_OUT_LOWDELAY) ? 1 : ctx->poll_slice_max;
++            poll_cfg->count_ret = 0;
++
++            ret = mpp_dev_ioctl(ctx->dev, MPP_DEV_CMD_POLL, poll_cfg);
++            if (ret)
++                break;
++
++            for (i = 0; i < poll_cfg->count_ret; i++) {
++                slice_last = poll_cfg->slice_info[i].last;
++                slice_len = poll_cfg->slice_info[i].length;
++                param.length = slice_len;
++
++                mpp_packet_add_segment_info(pkt, type, seg_offset, slice_len);
++                seg_offset += slice_len;
++
++                if (split_out & MPP_ENC_SPLIT_OUT_LOWDELAY) {
++                    if (slice_last)
++                        ctx->output_cb->cmd = ENC_OUTPUT_FINISH;
++                    else
++                        ctx->output_cb->cmd = ENC_OUTPUT_SLICE;
++
++                    mpp_callback(ctx->output_cb, &param);
++                }
++            }
++        } while (!slice_last);
++    } else {
++        ret = mpp_dev_ioctl(ctx->dev, MPP_DEV_CMD_POLL, NULL);
++    }
+ 
+     if (hal_dbg_flag_en(ctx->dbg_ctx, HAL_DBG_DUMP)) {
+         H265eSyntax_new *syn = (H265eSyntax_new *)enc_task->syntax.data;
+@@ -1628,7 +1700,6 @@ MPP_RET hal_h265e_v540c_wait(void *hal, HalEncTask *task)
+     if (ret)
+         mpp_err_f("poll cmd failed %d status %d \n", ret, elem->hw_status.val);
+ 
+-    H265eV540cRegSet *hw_regs = ctx->regs;
+     hal_h265e_vepu540c_dump_hw_regs(ctx->dbg_ctx, hw_regs, elem);
+     hal_dbg_finish(ctx->dbg_ctx);
+ 
+-- 
+2.43.0
+

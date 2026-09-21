@@ -40,6 +40,7 @@
 #include <rockchip/rk_venc_ref.h>
 
 #define MAX_V4L2_BUFFERS   2
+#define FIFO_SIZE          2
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 typedef struct {
@@ -51,6 +52,7 @@ typedef struct {
     uint32_t    bitrate_kbps;
     uint32_t    gop;
     int         codec_type;
+    int         slicing;
 } VtxConfig;
 
 typedef struct {
@@ -75,7 +77,7 @@ typedef struct {
     uint8_t         hdr_buf[512];
     size_t          hdr_len;
 
-    int             fifo[MAX_V4L2_BUFFERS];
+    int             fifo[FIFO_SIZE];
     int             fifo_head;
     int             fifo_tail;
     pthread_mutex_t fifo_lock;
@@ -205,10 +207,10 @@ static void *camera_capture_thread(void *arg) {
 
         MPP_RET put_ret = ctx->mpi->encode_put_frame(ctx->mpp_ctx, frame);
         if (put_ret == MPP_OK) {
-            /* Only push to FIFO on successful submission */
+            /* Push to FIFO on successful submission */
             pthread_mutex_lock(&ctx->fifo_lock);
             ctx->fifo[ctx->fifo_head] = idx;
-            ctx->fifo_head = (ctx->fifo_head + 1) % MAX_V4L2_BUFFERS;
+            ctx->fifo_head = (ctx->fifo_head + 1) % FIFO_SIZE;
             pthread_mutex_unlock(&ctx->fifo_lock);
         } else {
             /* Immediate requeue if rejected */
@@ -237,38 +239,11 @@ static void *venc_tx_thread(void *arg) {
     struct sched_param sp = { .sched_priority = 80 };
     pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
 
-    ctx->cdc_fd = open(ctx->cfg.cdc_dev, O_WRONLY | O_NONBLOCK | O_NOCTTY);
-    if (ctx->cdc_fd < 0) {
-        fprintf(stderr, "ERROR: Cannot open output '%s': %s\n", ctx->cfg.cdc_dev, strerror(errno));
-        quit = true;
-        return NULL;
-    }
-    set_serial_raw(ctx->cdc_fd);
-
-    /* Start camera capture - camera_capture_thread begins ingesting */
-    enum v4l2_buf_type type = ctx->buf_type;
-    if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) {
-        fprintf(stderr, "ERROR: VIDIOC_STREAMON failed\n");
-        quit = true;
-        return NULL;
-    }
-
-    /*
-     * The 100ms Handshake & Pre-fill:
-     * 1. Lets macOS CDC ACM acknowledge the open connection.
-     * 2. Lets camera_capture_thread capture and submit Frame 0 to MPP.
-     * When tx_thd wakes up, Packet 0 (IDR) is ready in MPP's output queue.
-     */
-    usleep(50000);
-
     uint32_t frame_cnt = 0;
     size_t total_bytes = 0;
     struct timespec last_time, cur_time;
     clock_gettime(CLOCK_MONOTONIC, &last_time);
 
-    /* Tracks whether we are about to emit the first packet of a new frame.
-     * Reset to 1 whenever a frame completes, so header insertion fires
-     * exactly once per resync frame -- before its first slice, not at EOI. */
     int first_pkt_of_frame = 1;
 
     while (!quit) {
@@ -290,16 +265,18 @@ static void *venc_tx_thread(void *arg) {
             int eoi = mpp_packet_is_eoi(packet);
 
             if (ptr && len > 0) {
-                /*
-                 * Send VPS/SPS/PPS once per resync frame, BEFORE the first
-                 * slice of that frame. With split output there may be
-                 * multiple packets per frame; guarding on
-                 * first_pkt_of_frame ensures the header is written exactly
-                 * once, ahead of any slice payload, rather than landing in
-                 * the middle of the frame at EOI.
-                 */
+                static int debug_pkts = 0;
+                if (debug_pkts < 25) {
+                    const uint8_t *b = (const uint8_t *)ptr;
+                    fprintf(stderr, "PKT %d (frame %u): len=%zu | bytes: %02x %02x %02x %02x %02x %02x\n",
+                            debug_pkts++, frame_cnt, len,
+                            len > 0 ? b[0] : 0, len > 1 ? b[1] : 0,
+                            len > 2 ? b[2] : 0, len > 3 ? b[3] : 0,
+                            len > 4 ? b[4] : 0, len > 5 ? b[5] : 0);
+                }
+                /* Periodic header resync VPS/SPS/PPS before the first slice of frame */
                 if (first_pkt_of_frame && ctx->hdr_len > 0 &&
-                    (frame_cnt == 0 || frame_cnt % 30 == 0)) {
+                    (frame_cnt == 0)) {
                     cdc_write_all(ctx->cdc_fd, ctx->hdr_buf, ctx->hdr_len);
                     total_bytes += ctx->hdr_len;
                 }
@@ -307,7 +284,6 @@ static void *venc_tx_thread(void *arg) {
                 cdc_write_all(ctx->cdc_fd, (const uint8_t *)ptr, len);
                 total_bytes += len;
 
-                /* We have emitted at least one slice of this frame. */
                 first_pkt_of_frame = 0;
             }
 
@@ -318,12 +294,11 @@ static void *venc_tx_thread(void *arg) {
         } while (!frame_complete && !quit);
 
         if (frame_complete) {
-            /* Prepare for the next frame's header decision. */
             first_pkt_of_frame = 1;
 
             pthread_mutex_lock(&ctx->fifo_lock);
             int return_idx = ctx->fifo[ctx->fifo_tail];
-            ctx->fifo_tail = (ctx->fifo_tail + 1) % MAX_V4L2_BUFFERS;
+            ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
             pthread_mutex_unlock(&ctx->fifo_lock);
 
             struct v4l2_buffer ret_buf;
@@ -348,7 +323,7 @@ static void *venc_tx_thread(void *arg) {
             xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &ret_buf);
             frame_cnt++;
 
-            /*if (frame_cnt % 60 == 0) {
+            if (frame_cnt % 60 == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &cur_time);
                 double elapsed = (cur_time.tv_sec - last_time.tv_sec) +
                                  (cur_time.tv_nsec - last_time.tv_nsec) / 1000000000.0;
@@ -360,13 +335,12 @@ static void *venc_tx_thread(void *arg) {
                 total_bytes = 0;
                 last_time = cur_time;
                 fflush(stdout);
-            }*/
+            }
         } else {
-            usleep(250);
+            usleep(200);
         }
     }
 
-    close(ctx->cdc_fd);
     return NULL;
 }
 
@@ -445,8 +419,34 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
         if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) return -1;
     }
 
+    /* Start camera stream now so buffers are ready before thread execution */
+    enum v4l2_buf_type type = ctx->buf_type;
+    if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
+    usleep(100000);
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
+
+    /*MppPollType timeout = MPP_POLL_NON_BLOCK;
+    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &timeout);
+    if (ret != MPP_OK) return -1;
+
+    timeout = MPP_POLL_BLOCK;
+    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout);
+    if (ret != MPP_OK) return -1;*/
+
+    /*MppPollType timeout = MPP_POLL_BLOCK;
+    ctx->mpi->control(ctx->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &timeout);
+    ctx->mpi->control(ctx->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout);*/
+
+    /*if (ctx->cfg.slicing) {
+        MppPollType timeout = MPP_POLL_NON_BLOCK;
+        ctx->mpi->control(ctx->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &timeout);
+
+        timeout = MPP_POLL_BLOCK;
+        ctx->mpi->control(ctx->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout);
+    }*/
+
+
 
     ret = mpp_init(ctx->mpp_ctx, MPP_CTX_ENC, (MppCodingType)ctx->cfg.codec_type);
     if (ret != MPP_OK) return -1;
@@ -475,7 +475,7 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:gop", ctx->cfg.gop);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:max_reenc_times", 0);
 
-    /* Hardware GIR: 128x32 Intra Box (refresh_num = 4 -> 4 * 32 = 128) */
+    /* Hardware GIR: 128x32 Intra Box */
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_en", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_mode", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_num", 11);
@@ -486,17 +486,17 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_luma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
 
-    /* Rate control tuning for lower latency (safe for RV1106) */
-    //mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:drop_mode", MPP_ENC_RC_DROP_FRM_DISABLED);
-    //mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:super_mode", MPP_ENC_RC_SUPER_FRM_NONE);
-    //mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:max_reenc_times", 0);
-
-    /* DO NOT USE these on RV1106: */
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 0);
-    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
-    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
-    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);
 
+    if (ctx->cfg.slicing) {
+        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
+        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
+        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);
+    } else {
+        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_NONE);
+        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 0);
+        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 0);
+    }
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
     if (ret != MPP_OK) { fprintf(stderr, "MPP_ENC_SET_CFG failed: %d\n", ret); return -1; }
@@ -527,35 +527,17 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_SEI_CFG, &sei_mode);
 
     MppPacket hdr_pkt = NULL;
-
     ret = mpp_packet_init(&hdr_pkt, ctx->hdr_buf, sizeof(ctx->hdr_buf));
-    if (ret != MPP_OK) {
-        fprintf(stderr, "mpp_packet_init for header failed: %d\n", ret);
-        return -1;
-    }
+    if (ret != MPP_OK) return -1;
 
-    /* Required: tell MPP the output packet currently contains 0 bytes */
     mpp_packet_set_length(hdr_pkt, 0);
-
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_GET_HDR_SYNC, hdr_pkt);
-
     if (ret != MPP_OK) {
-        fprintf(stderr, "MPP_ENC_GET_HDR_SYNC failed: %d\n", ret);
         ctx->hdr_len = 0;
     } else {
         ctx->hdr_len = mpp_packet_get_length(hdr_pkt);
-
         fprintf(stderr, ">>> H.265 header: %zu bytes <<<\n", ctx->hdr_len);
-
-        if (ctx->hdr_len > 0) {
-            uint8_t *p = (uint8_t *)mpp_packet_get_pos(hdr_pkt);
-            fprintf(stderr,
-                    "Header bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                    p[0], p[1], p[2], p[3],
-                    p[4], p[5], p[6], p[7]);
-        }
     }
-
     mpp_packet_deinit(&hdr_pkt);
 
     return 0;
@@ -581,19 +563,31 @@ int main(int argc, char **argv) {
     ctx.cfg.gop = 65536;
     ctx.cfg.codec_type = MPP_VIDEO_CodingHEVC;
 
+    const char *slice_env = getenv("VTX_SLICING");
+    ctx.cfg.slicing = slice_env ? (atoi(slice_env) != 0) : 1;
+
     if (v4l2_and_mpp_init(&ctx) < 0) {
         fprintf(stderr, "Failed to initialize V4L2 and MPP\n");
         return -1;
     }
 
-    /* Spawn capture thread first, then tx thread (which turns on STREAMON and does 100ms settle) */
-    pthread_create(&ctx.tx_thd, NULL, venc_tx_thread, &ctx);   
+    /* Open CDC device before launching threads */
+    ctx.cdc_fd = open(ctx.cfg.cdc_dev, O_WRONLY | O_NONBLOCK | O_NOCTTY);
+    if (ctx.cdc_fd < 0) {
+        fprintf(stderr, "ERROR: Cannot open output '%s': %s\n", ctx.cfg.cdc_dev, strerror(errno));
+        return -1;
+    }
+    set_serial_raw(ctx.cdc_fd);
+
+    pthread_create(&ctx.tx_thd, NULL, venc_tx_thread, &ctx);
     pthread_create(&ctx.cap_thd, NULL, camera_capture_thread, &ctx);
 
     while (!quit) sleep(1);
 
     pthread_join(ctx.cap_thd, NULL);
     pthread_join(ctx.tx_thd, NULL);
+
+    if (ctx.cdc_fd >= 0) close(ctx.cdc_fd);
 
     enum v4l2_buf_type vtype = ctx.buf_type;
     xioctl(ctx.v4l2_fd, VIDIOC_STREAMOFF, &vtype);

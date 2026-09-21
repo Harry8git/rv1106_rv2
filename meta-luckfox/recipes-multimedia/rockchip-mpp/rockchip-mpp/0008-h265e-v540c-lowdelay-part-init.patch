@@ -1,0 +1,41 @@
+From 048b8a4136ce4d756a126d800257fe378eb4c864 Mon Sep 17 00:00:00 2001
+From: Harry Spencer <harry8@gmail.com>
+Date: Sun, 20 Sep 2026 13:56:41 -0700
+Subject: [PATCH] h265e: fix V540C low delay slice output position
+Upstream-Status: Pending
+
+---
+ mpp/codec/mpp_enc_impl.c                 | 2 +-
+ mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c | 3 +++
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/mpp/codec/mpp_enc_impl.c b/mpp/codec/mpp_enc_impl.c
+index cfa6672aa..f65cbac63 100644
+--- a/mpp/codec/mpp_enc_impl.c
++++ b/mpp/codec/mpp_enc_impl.c
+@@ -306,7 +306,7 @@ MPP_RET mpp_enc_callback(const char *caller, void *ctx, RK_S32 cmd, void *param)
+     packet = task->packet;
+ 
+     if (part_first) {
+-        task->part_pos = (RK_U8 *)mpp_packet_get_pos(packet);
++        task->part_pos = (RK_U8 *)out->base;
+         task->part_length = mpp_packet_get_length(packet);
+ 
+         enc_dbg_slice("first slice previous length %d\n", task->part_length);
+diff --git a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+index 7f43eefb1..a29a5b743 100644
+--- a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
++++ b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+@@ -1742,6 +1742,9 @@ MPP_RET hal_h265e_v540c_get_task(void *hal, HalEncTask *task)
+     }
+     memset(&ctx->feedback, 0, sizeof(vepu540c_h265_fbk));
+ 
++    task->part_first = 1;
++    task->part_last = 0;
++
+     hal_h265e_leave();
+     return MPP_OK;
+ }
+-- 
+2.43.0
+

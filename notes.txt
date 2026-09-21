@@ -21,14 +21,8 @@ bitbake core-image-minimal
 
 
 
-
-
-
-
-
 Partitions defined in:
 luckfox-pico-pro-max-sd.wks.in
-
 
 
 
@@ -43,10 +37,6 @@ grep "LAYERSERIES_COMPAT" meta-luckfox/conf/layer.conf
 grep "LAYERDEPENDS" meta-luckfox/conf/layer.conf
 
 
-
-
-
-
 bitbake virtual/kernel -c cleansstate
 
 bitbake core-image-minimal
@@ -59,22 +49,15 @@ ssh root@169.254.100.1
 
 
 
-
-
-
-ip addr del 172.32.0.93/16 dev usb0
-ip addr add 169.254.100.1/16 dev usb0
-
 cd ~/rv2 || exit 1
 source openembedded-core/oe-init-build-env build
 bitbake core-image-minimal
 
-NEW_YOCTO="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-zero"
+NEW_YOCTO="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/deploy/images/luckfox-pico-zero"
 rkdeveloptool db "$NEW_YOCTO/download.bin" && \
 rkdeveloptool wl 0 "$NEW_YOCTO/core-image-minimal-luckfox-pico-zero.rootfs.wic" && \
 rkdeveloptool rd
 
-./build-and-deploy-vtx.sh
 scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/vtx root@169.254.100.1:/usr/bin/vtx
 
 
@@ -93,24 +76,6 @@ ssh-keygen -R 192.168.1.225
 
 
 
-
-
-dmesg | grep -i "IMX462"
-media-ctl -p -d /dev/media0 | grep -C 5 "m00_b_imx462"
-
-/usr/bin/rkaiq_3A_server &
-sleep 2
-vtx
-
-
-
-
-
-
-ps | grep -E "rkaiq|3A|isp"
-
-
-
 # 1. Capture 5 frames at 1280x720 NV12 from /dev/video11
 v4l2-ctl -d /dev/video11 --set-fmt-video=width=1280,height=720,pixelformat=NV12 --stream-mmap --stream-count=5 --stream-to=/tmp/test_720p.yuv
 
@@ -120,11 +85,6 @@ ls -lh /tmp/test_720p.yuv
 scp root@169.254.100.1:/tmp/test_720p.yuv ~/Desktop/test_720p.yuv
 ffplay -f rawvideo -pixel_format nv12 -video_size 1280x720 ~/Desktop/test_720p.yuv
 
-
-
-
-# On the RV1106 board:
-vtx -w 1280 -h 720 -b 2400 -f 60 -c 265
 
 
 git --no-pager diff upstream/main...HEAD > my_changes.diff
@@ -278,8 +238,6 @@ bitbake luckfox-vtx
 
 cd ~/rv2
 bitbake -c compile -f luckfox-vtx
-cp build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx apps/vtx
-
 scp ~/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx root@169.254.100.1:/usr/bin/vtx
 
 
@@ -328,6 +286,89 @@ mpv "$DEVICE" \
   --video-sync=desync \
   --framedrop=vo \
   --no-audio
+
+
+
+
+
+
+/* Enable low-delay mode and split encoding */
+mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1);
+mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
+mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 32); // Split every 32 CTUs
+mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", MPP_ENC_SPLIT_OUT_LOWDELAY);
+
+mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:drop_mode", MPP_ENC_RC_DROP_FRM_DISABLED);
+mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:super_mode", MPP_ENC_RC_SUPER_FRM_NONE);
+
+
+
+
+
+
+
+YOCTO_DIR="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/deploy/images/luckfox-pico-zero"
+rkdeveloptool db "$YOCTO_DIR/download.bin" && \
+rkdeveloptool wl 0 "$YOCTO_DIR/core-image-minimal-luckfox-pico-zero.rootfs.wic" && \
+rkdeveloptool rd
+
+
+sudo ./upgrade_tool uf /Users/hspencer/OrbStack/ld/home/hspencer/luckfox-pico/output/image/update.img
+
+sudo ./upgrade_tool uf /Users/hspencer/OrbStack/ld/home/hspencer/openipc-firmware/output/images/update.img
+
+
+cd ~/openipc-firmware
+make BOARD=rv1106_zero_divinus build
+
+LOADER="/Users/hspencer/OrbStack/ld/home/hspencer/luckfox-pico/output/image/download.bin"
+OPENIPC="/Users/hspencer/OrbStack/ld/home/hspencer/openipc-firmware/output/images"
+rkdeveloptool db "$LOADER"
+rkdeveloptool wl 0x640 "$OPENIPC/zboot.img"
+rkdeveloptool wl 0x190640 "$OPENIPC/rootfs.ext4"
+rkdeveloptool rd
+
+LOADER="/Users/hspencer/OrbStack/ld/home/hspencer/luckfox-pico/output/image/download.bin"
+OPENIPC="/Users/hspencer/OrbStack/ld/home/hspencer/openipc-firmware/output/images"
+rkdeveloptool db "$LOADER"
+rkdeveloptool wl 0x640 "$OPENIPC/zboot.img"
+rkdeveloptool wl 0x190640 "$OPENIPC/rootfs.ext2"
+rkdeveloptool rd
+
+git diff upstream/master...master -- $(git diff --diff-filter=M --name-only upstream/master...master)
+echo "----- NEW FILES -----"
+git diff --diff-filter=A --name-only upstream/master...master
+
+
+make -C output linux-dirclean
+make -C output linux
+make -C output
+
+Divinus executable itself defines mmap64
+
+
+sed -i 's|udp://169.254.100.2:5600|udp://169.254.17.12:5600|g' /etc/divinus.yaml
+
+
+killall -9 divinus
+
+make -C output divinus-rebuild
+
+
+python3 -m http.server 8000 --bind 0.0.0.0
+python3 -m http.server 8080 --directory output/target/usr/bin
+
+/usr/bin/divinus -c /etc/divinus.yaml
+/etc/init.d/S95divinus restart
+
+
+
+
+
+
+
+
+
 
 
 

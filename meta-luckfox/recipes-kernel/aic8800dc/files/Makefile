@@ -6,7 +6,6 @@ ifneq ($(KERNELRELEASE),)
 
 obj-m += aic8800_bsp/
 obj-m += aic8800_fdrv/
-obj-m += aic8800_btlpm/
 
 # Platform defines
 ccflags-y += -DANDROID_PLATFORM

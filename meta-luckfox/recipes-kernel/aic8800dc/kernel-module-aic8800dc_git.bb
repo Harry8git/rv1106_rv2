@@ -11,7 +11,6 @@ SRC_URI = "git://github.com/LYU4662/aic8800-sdio-linux-1.0.git;protocol=https;br
            file://Makefile \
            file://aic8800_bsp-Kbuild \
            file://aic8800_fdrv-Kbuild \
-           file://aic8800_btlpm-Kbuild \
            file://aic8800dc-wifi.init \
            file://aic8800-modules.conf \
            file://25-wlan.network \
@@ -32,7 +31,7 @@ do_configure() {
     cp -f ${UNPACKDIR}/Makefile ${S}/Makefile
 
     # Install Kbuild files and remove vendor Makefiles to avoid recursion conflict
-    for mod in aic8800_bsp aic8800_fdrv aic8800_btlpm; do
+    for mod in aic8800_bsp aic8800_fdrv; do
         rm -f ${S}/${mod}/Makefile
         cp -f ${UNPACKDIR}/${mod}-Kbuild ${S}/${mod}/Kbuild
     done

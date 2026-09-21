@@ -25,6 +25,7 @@ SRC_URI = "git://github.com/rockchip-linux/kernel.git;protocol=https;branch=${KB
            file://0004-mpp-iommu-reject-non-contiguous-buffers-on-no-iommu.patch \
            file://0007-rknpu-fix-arm32-cache-flush-and-format-specifier.patch \
            file://0008-rga2-fix-get-user-pages-remote.patch \
+           file://0009-video-rockchip-mpp-rkvenc2-fix-rv1106-split-registers.patch \
            file://enable-efi-partition.cfg \
            file://enable-camera-subsystem.cfg \
            file://enable-stmmac-ethtool.cfg \

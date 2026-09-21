@@ -1,0 +1,36 @@
+From 4b62f6cff07bafaf389c87893399dfa4a57cf666 Mon Sep 17 00:00:00 2001
+From: Harry Spencer <harry8@gmail.com>
+Date: Sun, 20 Sep 2026 12:02:33 -0700
+Subject: [PATCH] mpp: add V540C slice poll diagnostics
+
+Upstream-Status: Pending
+---
+ mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+index 399ec4536..7f43eefb1 100644
+--- a/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
++++ b/mpp/hal/rkenc/h265e/hal_h265e_vepu540c.c
+@@ -1661,10 +1661,18 @@ MPP_RET hal_h265e_v540c_wait(void *hal, HalEncTask *task)
+             poll_cfg->count_ret = 0;
+ 
+             ret = mpp_dev_ioctl(ctx->dev, MPP_DEV_CMD_POLL, poll_cfg);
++
++            mpp_err_f("V540C slice poll ret=%d count_ret=%d count_max=%d\\n",
++                      ret, poll_cfg->count_ret, poll_cfg->count_max);
++
+             if (ret)
+                 break;
+ 
+             for (i = 0; i < poll_cfg->count_ret; i++) {
++                mpp_err_f("V540C slice %d: len=%u last=%u\\n",
++                          i,
++                          poll_cfg->slice_info[i].length,
++                          poll_cfg->slice_info[i].last);
+                 slice_last = poll_cfg->slice_info[i].last;
+                 slice_len = poll_cfg->slice_info[i].length;
+                 param.length = slice_len;
+-- 
+2.43.0
+

@@ -38,10 +38,6 @@ case "$1" in
         sleep 0.5
       fi
       
-      if ! lsmod | grep -q aic8800_btlpm; then
-        modprobe aic8800_btlpm && echo "  Loaded aic8800_btlpm"
-      fi
-      
       # Check if wlan0 interface appeared
       sleep 1
       if ip link show wlan0 >/dev/null 2>&1; then
@@ -56,7 +52,6 @@ case "$1" in
     
   stop)
     echo "Unloading AIC8800DC WiFi modules..."
-    rmmod aic8800_btlpm 2>/dev/null || true
     sleep 0.2
     rmmod aic8800_fdrv 2>/dev/null || true
     sleep 0.2

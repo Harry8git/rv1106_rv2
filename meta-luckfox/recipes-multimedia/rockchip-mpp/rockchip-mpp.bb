@@ -14,6 +14,8 @@ PATCHTOOL = "git"
 SRC_URI = "git://github.com/rockchip-linux/mpp;protocol=https;branch=develop \
            file://0001-mpp_soc-hal-add-rv1106-and-rv1103-encoder-only-SoC-s.patch \
            file://0004-osal-allocator-dma_heap-force-CMA-heap-no-IOMMU-SoCs.patch \
+           file://0006-hal-h265e-vepu540c-lowdelay-slice-output.patch \
+           file://0008-h265e-v540c-lowdelay-part-init.patch \
            "
 inherit pkgconfig cmake
 PATCHTOOL = "git"
