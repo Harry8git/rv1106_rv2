@@ -409,10 +409,6 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     if (ret != MPP_OK) return -1;
 
     ret = mpp_init(ctx->mpp_ctx, MPP_CTX_ENC, (MppCodingType)ctx->cfg.codec_type);
-
-
-
-    ret = mpp_init(ctx->mpp_ctx, MPP_CTX_ENC, (MppCodingType)ctx->cfg.codec_type);
     if (ret != MPP_OK) return -1;
 
     ret = mpp_enc_cfg_init(&ctx->enc_cfg);
