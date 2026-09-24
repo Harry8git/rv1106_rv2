@@ -18,3 +18,5 @@ bitbake*/.cache/
 *.pyc
 __pycache__/
 .vscode/
+
+build/bitbake.lock
