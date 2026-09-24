@@ -7,15 +7,13 @@ SECTION = "multimedia"
 LICENSE = "Apache-2.0 & MIT"
 LIC_FILES_CHKSUM = "file://LICENSES/Apache-2.0;md5=7f43e699e0a26fae98c2938092f008d2 file://LICENSES/MIT;md5=e8f57dd048e186199433be2c41bd3d6d"
 PV = "1.0+git"
-SRCREV = "${AUTOREV}"
+SRCREV = "16e8843f9933196e21a0596328f3ecb0dcd75347"
 UPSTREAM_CHECK_COMMITS = "1"
 PATCHTOOL = "git"
 
 SRC_URI = "git://github.com/rockchip-linux/mpp;protocol=https;branch=develop \
            file://0001-mpp_soc-hal-add-rv1106-and-rv1103-encoder-only-SoC-s.patch \
            file://0004-osal-allocator-dma_heap-force-CMA-heap-no-IOMMU-SoCs.patch \
-           file://0006-hal-h265e-vepu540c-lowdelay-slice-output.patch \
-           file://0008-h265e-v540c-lowdelay-part-init.patch \
            "
 inherit pkgconfig cmake
 PATCHTOOL = "git"

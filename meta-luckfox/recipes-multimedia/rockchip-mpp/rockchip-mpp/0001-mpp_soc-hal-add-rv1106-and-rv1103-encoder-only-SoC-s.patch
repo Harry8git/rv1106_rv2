@@ -17,6 +17,19 @@ Upstream-Status: Pending
  osal/mpp_soc.c                           | 24 ++++++++++
  9 files changed, 90 insertions(+), 16 deletions(-)
 
+diff --git a/mpp/codec/enc/h265/h265e_api.c b/mpp/codec/enc/h265/h265e_api.c
+index 1637782e3..27cc9d30b 100644
+--- a/mpp/codec/enc/h265/h265e_api.c
++++ b/mpp/codec/enc/h265/h265e_api.c
+@@ -72,6 +72,8 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
+ 
+     soc_type = mpp_get_soc_type();
+     if (soc_type == ROCKCHIP_SOC_RK3528 ||
++        soc_type == ROCKCHIP_SOC_RV1103 ||
++        soc_type == ROCKCHIP_SOC_RV1106 ||
+         soc_type == ROCKCHIP_SOC_RK3576 ||
+         soc_type == ROCKCHIP_SOC_RV1126B ||
+         soc_type == ROCKCHIP_SOC_RK3572)
 diff --git a/mpp/codec/enc/h265/h265e_dpb.c b/mpp/codec/enc/h265/h265e_dpb.c
 index b033cb823..ef558495c 100644
 --- a/mpp/codec/enc/h265/h265e_dpb.c
