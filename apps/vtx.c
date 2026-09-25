@@ -1,10 +1,12 @@
 /*
- * Dedicated Low-Latency 720p60 USB CDC Streamer (VTX)
- * Pure N-1 Short-Term Reference Pipeline with GIR (128x32 Intra Box)
- * Infinite GOP (rc:gop = 65536) with periodic header resync for mid-stream decoders
+ * Dedicated Low-Latency 720p60 USB Vendor Bulk Streamer (VTX)
+ * Linux FunctionFS (Vendor Class 0xFF) Bulk IN Endpoint Pipeline
+ * Pure N-1 Short-Term Reference Pipeline with GIR
+ * Infinite GOP with periodic header resync for mid-stream decoders
  */
 
 #define _GNU_SOURCE
+#include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -22,11 +24,13 @@
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <linux/dma-buf.h>
+#include <linux/gpio.h>
 #include <linux/videodev2.h>
+#include <linux/usb/ch9.h>
+#include <linux/usb/functionfs.h>
 
 #include <rockchip/rk_mpi.h>
 #include <rockchip/rk_mpi_cmd.h>
@@ -43,9 +47,40 @@
 #define FIFO_SIZE          2
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
+#define FFS_EP0_PATH       "/dev/usb-ffs/vtx/ep0"
+#define FFS_EP1_PATH       "/dev/usb-ffs/vtx/ep1"
+#define GADGET_UDC_PATH    "/sys/kernel/config/usb_gadget/g1/UDC"
+
+struct ffs_desc_full {
+    struct usb_functionfs_descs_head_v2 header;
+    __le32 fs_count;
+    __le32 hs_count;
+    struct {
+        struct usb_interface_descriptor intf;
+        struct {
+            __u8  bLength;
+            __u8  bDescriptorType;
+            __u8  bEndpointAddress;
+            __u8  bmAttributes;
+            __le16 wMaxPacketSize;
+            __u8  bInterval;
+        } __attribute__((packed)) bulk_in;
+    } __attribute__((packed)) fs_descs, hs_descs;
+} __attribute__((packed));
+
+struct ffs_strings_full {
+    __le32 magic;
+    __le32 length;
+    __le32 str_count;
+    __le32 lang_count;
+    struct {
+        __le16 code;
+        char str1[18];
+    } __attribute__((packed)) tab;
+} __attribute__((packed));
+
 typedef struct {
     char        v4l2_dev[64];
-    char        cdc_dev[64];
     uint32_t    width;
     uint32_t    height;
     uint32_t    fps;
@@ -53,6 +88,7 @@ typedef struct {
     uint32_t    gop;
     int         codec_type;
     int         slicing;
+    bool        autostart;
 } VtxConfig;
 
 typedef struct {
@@ -82,9 +118,13 @@ typedef struct {
     int             fifo_tail;
     pthread_mutex_t fifo_lock;
 
-    int             cdc_fd;
+    int             ep0_fd;
+    int             ep1_fd;
+    pthread_t       ep0_thd;
     pthread_t       cap_thd;
     pthread_t       tx_thd;
+
+    volatile bool   streaming;
 } VtxContext;
 
 static volatile bool quit = false;
@@ -92,51 +132,6 @@ static volatile bool quit = false;
 static void sigterm_handler(int sig) {
     (void)sig;
     quit = true;
-}
-
-static int set_serial_raw(int fd) {
-    struct termios tty;
-    if (tcgetattr(fd, &tty) != 0) return 0;
-    cfmakeraw(&tty);
-    tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON | IXOFF);
-    tty.c_oflag &= ~(OPOST | ONLCR | OCRNL | ONOCR | ONLRET);
-    tty.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-    tty.c_cflag |= (CS8 | CLOCAL | CREAD);
-    tty.c_cflag &= ~(PARENB | CSTOPB | CRTSCTS);
-    tcflush(fd, TCIOFLUSH);
-    return tcsetattr(fd, TCSANOW, &tty);
-}
-
-static inline int cdc_write_all(int fd, const uint8_t *buf, size_t len) {
-    size_t total_written = 0;
-    struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-    int retry = 0;
-
-    while (total_written < len && !quit) {
-        int ret = poll(&pfd, 1, 10);
-        if (ret < 0) {
-            if (errno == EINTR) continue;
-            fprintf(stderr, ">>> CDC ERROR: poll failed: %s <<<\n", strerror(errno));
-            return -1;
-        }
-        if (ret == 0) {
-            if (++retry > 50) {
-                fprintf(stderr, ">>> CDC TIMEOUT: Dropped %zu bytes <<<\n", len - total_written);
-                return -1;
-            }
-            continue;
-        }
-        retry = 0;
-
-        ssize_t n = write(fd, buf + total_written, len - total_written);
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
-            fprintf(stderr, ">>> CDC ERROR: write failed: %s <<<\n", strerror(errno));
-            return -1;
-        }
-        total_written += (size_t)n;
-    }
-    return (int)total_written;
 }
 
 static int xioctl(int fh, int request, void *arg) {
@@ -148,7 +143,44 @@ static int xioctl(int fh, int request, void *arg) {
 }
 
 /* ----------------------------------------------------------------------------
- * THREAD 1: Full-Speed Camera Capture (Runs at real 60 FPS)
+ * USB Bulk Writer (Zero-blocking, drop-on-stall for live VTX)
+ * ---------------------------------------------------------------------------- */
+static inline int bulk_write_all(int fd, const uint8_t *buf, size_t len) {
+    size_t total_written = 0;
+
+    while (total_written < len && !quit) {
+        ssize_t n = write(fd, buf + total_written, len - total_written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Host is not reading endpoint: drop frame immediately to prevent stalls */
+                return -1;
+            }
+            return -1;
+        }
+        total_written += (size_t)n;
+    }
+    return (int)total_written;
+}
+
+/* ----------------------------------------------------------------------------
+ * FunctionFS EP0 Event Handler Thread
+ * ---------------------------------------------------------------------------- */
+static int open_vtx_endpoint(VtxContext *ctx) {
+    ctx->ep1_fd = open(FFS_EP1_PATH, O_RDWR | O_NONBLOCK);
+    if (ctx->ep1_fd < 0) {
+        fprintf(stderr, "ERROR: Cannot open '%s': %s (Is luckfox-usb-daemon running?)\n",
+                FFS_EP1_PATH, strerror(errno));
+        return -1;
+    }
+    fprintf(stderr, ">>> VTX connected to USB Bulk Endpoint <<<\n");
+    return 0;
+}
+
+
+
+/* ----------------------------------------------------------------------------
+ * THREAD 1: Full-Speed Camera Capture (60 FPS)
  * ---------------------------------------------------------------------------- */
 static void *camera_capture_thread(void *arg) {
     VtxContext *ctx = (VtxContext *)arg;
@@ -162,7 +194,7 @@ static void *camera_capture_thread(void *arg) {
     uint32_t cap_cnt = 0;
     static uint32_t last_seq = 0;
 
-    while (!quit) {
+    while (!quit && ctx->streaming) {
         struct pollfd pfd = { .fd = ctx->v4l2_fd, .events = POLLIN };
         int poll_ret = poll(&pfd, 1, 30);
         if (poll_ret <= 0) continue;
@@ -186,7 +218,6 @@ static void *camera_capture_thread(void *arg) {
             continue;
         }
 
-        /* Check for skipped or dropped camera frames */
         if (last_seq != 0 && buf.sequence != last_seq + 1) {
             fprintf(stderr, ">>> CAMERA DROP: missed %u frame(s)! (seq %u vs %u) <<<\n",
                     buf.sequence - (last_seq + 1), buf.sequence, last_seq + 1);
@@ -210,7 +241,7 @@ static void *camera_capture_thread(void *arg) {
             put_ret = ctx->mpi->encode_put_frame(ctx->mpp_ctx, frame);
             if (put_ret != MPP_OK)
                 usleep(500);
-        } while (put_ret != MPP_OK && !quit);
+        } while (put_ret != MPP_OK && !quit && ctx->streaming);
 
         if (put_ret == MPP_OK) {
             pthread_mutex_lock(&ctx->fifo_lock);
@@ -226,7 +257,7 @@ static void *camera_capture_thread(void *arg) {
 }
 
 /* ----------------------------------------------------------------------------
- * THREAD 2: USB CDC Output & Safe V4L2 Buffer Requeue
+ * THREAD 2: USB Bulk Output & Safe V4L2 Buffer Requeue
  * ---------------------------------------------------------------------------- */
 static void *venc_tx_thread(void *arg) {
     VtxContext *ctx = (VtxContext *)arg;
@@ -242,83 +273,84 @@ static void *venc_tx_thread(void *arg) {
 
     int first_pkt_of_frame = 1;
 
-    while (!quit) {
-    MppPacket packet = NULL;
-    MPP_RET ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
+    while (!quit && ctx->streaming) {
+        MppPacket packet = NULL;
+        MPP_RET ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
 
-    if (ret != MPP_OK || !packet) {
-        usleep(300);
-        continue;
-    }
-
-    void *ptr = mpp_packet_get_pos(packet);
-    size_t len = mpp_packet_get_length(packet);
-    int partition = mpp_packet_is_partition(packet);
-    int eoi = mpp_packet_is_eoi(packet);
-
-    if (ptr && len > 0) {
-        if (first_pkt_of_frame && ctx->hdr_len > 0 &&
-            (frame_cnt == 0 || frame_cnt % 60 == 0)) {
-            cdc_write_all(ctx->cdc_fd, ctx->hdr_buf, ctx->hdr_len);
-            total_bytes += ctx->hdr_len;
+        if (ret != MPP_OK || !packet) {
+            usleep(300);
+            continue;
         }
 
-        cdc_write_all(ctx->cdc_fd, (const uint8_t *)ptr, len);
-        total_bytes += len;
-        first_pkt_of_frame = 0;
-    }
+        void *ptr = mpp_packet_get_pos(packet);
+        size_t len = mpp_packet_get_length(packet);
+        int partition = mpp_packet_is_partition(packet);
+        int eoi = mpp_packet_is_eoi(packet);
 
-    mpp_packet_deinit(&packet);
+        if (ptr && len > 0) {
+            if (first_pkt_of_frame && ctx->hdr_len > 0 &&
+                (frame_cnt == 0 || frame_cnt % 60 == 0)) {
+                bulk_write_all(ctx->ep1_fd, ctx->hdr_buf, ctx->hdr_len);
+                total_bytes += ctx->hdr_len;
+            }
 
-    int frame_complete = partition ? eoi : 1;
-    if (frame_complete) {
-        first_pkt_of_frame = 1;
-
-        pthread_mutex_lock(&ctx->fifo_lock);
-        int return_idx = ctx->fifo[ctx->fifo_tail];
-        ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
-        pthread_mutex_unlock(&ctx->fifo_lock);
-
-        struct v4l2_buffer ret_buf;
-        struct v4l2_plane ret_planes[1];
-        memset(&ret_buf, 0, sizeof(ret_buf));
-        memset(ret_planes, 0, sizeof(ret_planes));
-
-        ret_buf.type = ctx->buf_type;
-        ret_buf.memory = V4L2_MEMORY_DMABUF;
-        ret_buf.index = return_idx;
-
-        if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-            ret_planes[0].m.fd = ctx->buffers[return_idx].dma_fd;
-            ret_planes[0].length = ctx->buffers[return_idx].length;
-            ret_buf.m.planes = ret_planes;
-            ret_buf.length = 1;
-        } else {
-            ret_buf.m.fd = ctx->buffers[return_idx].dma_fd;
-            ret_buf.length = ctx->buffers[return_idx].length;
+            bulk_write_all(ctx->ep1_fd, (const uint8_t *)ptr, len);
+            total_bytes += len;
+            first_pkt_of_frame = 0;
         }
 
-        xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &ret_buf);
-        frame_cnt++;
+        mpp_packet_deinit(&packet);
 
-        if (frame_cnt % 60 == 0) {
-            clock_gettime(CLOCK_MONOTONIC, &cur_time);
-            double elapsed = (cur_time.tv_sec - last_time.tv_sec) +
-                             (cur_time.tv_nsec - last_time.tv_nsec) / 1000000000.0;
-            double real_fps = 60.0 / elapsed;
+        int frame_complete = partition ? eoi : 1;
+        if (frame_complete) {
+            first_pkt_of_frame = 1;
 
-            printf(">>> VTX: %u frames | Real FPS: %.1f | Bitrate: %.1f Kbps <<<\n",
-                   frame_cnt, real_fps, (total_bytes * 8.0 / 1000.0) / elapsed);
+            pthread_mutex_lock(&ctx->fifo_lock);
+            int return_idx = ctx->fifo[ctx->fifo_tail];
+            ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
+            pthread_mutex_unlock(&ctx->fifo_lock);
 
-            total_bytes = 0;
-            last_time = cur_time;
-            fflush(stdout);
+            struct v4l2_buffer ret_buf;
+            struct v4l2_plane ret_planes[1];
+            memset(&ret_buf, 0, sizeof(ret_buf));
+            memset(ret_planes, 0, sizeof(ret_planes));
+
+            ret_buf.type = ctx->buf_type;
+            ret_buf.memory = V4L2_MEMORY_DMABUF;
+            ret_buf.index = return_idx;
+
+            if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+                ret_planes[0].m.fd = ctx->buffers[return_idx].dma_fd;
+                ret_planes[0].length = ctx->buffers[return_idx].length;
+                ret_buf.m.planes = ret_planes;
+                ret_buf.length = 1;
+            } else {
+                ret_buf.m.fd = ctx->buffers[return_idx].dma_fd;
+                ret_buf.length = ctx->buffers[return_idx].length;
+            }
+
+            xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &ret_buf);
+            frame_cnt++;
+
+            if (frame_cnt % 60 == 0) {
+                clock_gettime(CLOCK_MONOTONIC, &cur_time);
+                double elapsed = (cur_time.tv_sec - last_time.tv_sec) +
+                                 (cur_time.tv_nsec - last_time.tv_nsec) / 1000000000.0;
+                double real_fps = 60.0 / elapsed;
+
+                printf(">>> VTX USB-BULK: %u frames | Real FPS: %.1f | Bitrate: %.1f Kbps <<<\n",
+                       frame_cnt, real_fps, (total_bytes * 8.0 / 1000.0) / elapsed);
+
+                total_bytes = 0;
+                last_time = cur_time;
+                fflush(stdout);
+            }
         }
     }
+    return NULL;
 }
-}
 
-static int v4l2_and_mpp_init(VtxContext *ctx) {
+static int start_pipeline(VtxContext *ctx) {
     ctx->v4l2_fd = open(ctx->cfg.v4l2_dev, O_RDWR | O_NONBLOCK, 0);
     if (ctx->v4l2_fd < 0) return -1;
 
@@ -393,10 +425,10 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
         if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) return -1;
     }
 
-    /* Start camera stream now so buffers are ready before thread execution */
     enum v4l2_buf_type type = ctx->buf_type;
     if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
     usleep(100000);
+
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
 
@@ -430,12 +462,9 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_flex", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_num", ctx->cfg.fps);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_denorm", 1);
-
-    /* Infinite GOP: 1 initial IDR frame, then continuous P-frames */
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:gop", ctx->cfg.gop);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:max_reenc_times", 0);
 
-    /* Hardware GIR: 128x32 Intra Box */
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_en", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_mode", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:refresh_num", 11);
@@ -445,7 +474,6 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:scaling_list", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_luma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
-
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 0);
 
     if (ctx->cfg.slicing) {
@@ -459,9 +487,8 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     }
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
-    if (ret != MPP_OK) { fprintf(stderr, "MPP_ENC_SET_CFG failed: %d\n", ret); return -1; }
+    if (ret != MPP_OK) return -1;
 
-    /* ---- Reference config: Pure N-1 short-term reference chain ---- */
     mpp_enc_ref_cfg_init(&ctx->ref_cfg);
     mpp_enc_ref_cfg_set_cfg_cnt(ctx->ref_cfg, 0, 1);
 
@@ -475,10 +502,10 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
     mpp_enc_ref_cfg_add_st_cfg(ctx->ref_cfg, 1, &st_cfg);
 
     ret = mpp_enc_ref_cfg_check(ctx->ref_cfg);
-    if (ret != MPP_OK) { fprintf(stderr, "mpp_enc_ref_cfg_check failed: %d\n", ret); return -1; }
+    if (ret != MPP_OK) return -1;
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_REF_CFG, ctx->ref_cfg);
-    if (ret != MPP_OK) { fprintf(stderr, "MPP_ENC_SET_REF_CFG failed: %d\n", ret); return -1; }
+    if (ret != MPP_OK) return -1;
 
     MppEncHeaderMode hdr_mode = MPP_ENC_HEADER_MODE_EACH_IDR;
     ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_HEADER_MODE, &hdr_mode);
@@ -496,26 +523,52 @@ static int v4l2_and_mpp_init(VtxContext *ctx) {
         ctx->hdr_len = 0;
     } else {
         ctx->hdr_len = mpp_packet_get_length(hdr_pkt);
-        fprintf(stderr, ">>> H.265 header: %zu bytes <<<\n", ctx->hdr_len);
+        fprintf(stderr, ">>> H.265 sync header: %zu bytes <<<\n", ctx->hdr_len);
     }
     mpp_packet_deinit(&hdr_pkt);
 
+    ctx->streaming = true;
+    pthread_create(&ctx->tx_thd, NULL, venc_tx_thread, ctx);
+    pthread_create(&ctx->cap_thd, NULL, camera_capture_thread, ctx);
     return 0;
 }
 
-int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+static void stop_pipeline(VtxContext *ctx) {
+    if (!ctx->streaming) return;
+    ctx->streaming = false;
 
+    pthread_join(ctx->cap_thd, NULL);
+    pthread_join(ctx->tx_thd, NULL);
+
+    enum v4l2_buf_type vtype = ctx->buf_type;
+    xioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &vtype);
+    close(ctx->v4l2_fd);
+
+    if (ctx->ref_cfg) mpp_enc_ref_cfg_deinit(&ctx->ref_cfg);
+    if (ctx->enc_cfg) mpp_enc_cfg_deinit(ctx->enc_cfg);
+    if (ctx->mpp_ctx) mpp_destroy(ctx->mpp_ctx);
+
+    for (uint32_t i = 0; i < ctx->buf_count; ++i) {
+        if (ctx->buffers[i].mpp_buf) mpp_buffer_put(ctx->buffers[i].mpp_buf);
+    }
+    if (ctx->buf_group) mpp_buffer_group_put(ctx->buf_group);
+}
+
+static void sigusr1_handler(int sig) {
+    (void)sig;
+}
+
+int main(int argc, char **argv) {
     signal(SIGINT, sigterm_handler);
     signal(SIGTERM, sigterm_handler);
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGUSR1, sigusr1_handler);
 
     VtxContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     pthread_mutex_init(&ctx.fifo_lock, NULL);
 
     strncpy(ctx.cfg.v4l2_dev, "/dev/video11", sizeof(ctx.cfg.v4l2_dev) - 1);
-    strncpy(ctx.cfg.cdc_dev, "/dev/ttyGS0", sizeof(ctx.cfg.cdc_dev) - 1);
     ctx.cfg.width = 1280;
     ctx.cfg.height = 720;
     ctx.cfg.fps = 60;
@@ -524,44 +577,109 @@ int main(int argc, char **argv) {
     ctx.cfg.codec_type = MPP_VIDEO_CodingHEVC;
 
     const char *slice_env = getenv("VTX_SLICING");
-    ctx.cfg.slicing = slice_env ? (atoi(slice_env) != 0) : 1;
+    ctx.cfg.slicing = slice_env ? (atoi(slice_env) != 0) : 0;
 
-    if (v4l2_and_mpp_init(&ctx) < 0) {
-        fprintf(stderr, "Failed to initialize V4L2 and MPP\n");
-        return -1;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-i") || !strcmp(argv[i], "--immediate"))
+            ctx.cfg.autostart = true;
+    }
+    if (getenv("VTX_AUTOSTART") && atoi(getenv("VTX_AUTOSTART")) != 0)
+        ctx.cfg.autostart = true;
+
+    /* 1. Initialize USB FunctionFS Vendor Endpoint & Bind Gadget */
+    if (open_vtx_endpoint(&ctx) < 0) {
+        fprintf(stderr, "Fatal: Failed to initialize FunctionFS\n");
+        return 1;
     }
 
-    /* Open CDC device before launching threads */
-    ctx.cdc_fd = open(ctx.cfg.cdc_dev, O_WRONLY | O_NONBLOCK | O_NOCTTY);
-    if (ctx.cdc_fd < 0) {
-        fprintf(stderr, "ERROR: Cannot open output '%s': %s\n", ctx.cfg.cdc_dev, strerror(errno));
-        return -1;
+    /* 2. Standby / Arming Loop (GPIO4_C0 + SSH STDIN keyboard trigger) */
+    int gpio_chip_fd = open("/dev/gpiochip4", O_RDWR | O_NONBLOCK);
+    int gpio_event_fd = -1;
+
+    if (gpio_chip_fd >= 0) {
+        struct gpioevent_request req;
+        memset(&req, 0, sizeof(req));
+        req.lineoffset = 16;
+        req.handleflags = GPIOHANDLE_REQUEST_INPUT;
+        req.eventflags = GPIOEVENT_REQUEST_FALLING_EDGE;
+        strncpy(req.consumer_label, "vtx_btn", sizeof(req.consumer_label) - 1);
+
+        if (ioctl(gpio_chip_fd, GPIO_GET_LINEEVENT_IOCTL, &req) == 0) {
+            gpio_event_fd = req.fd;
+            fprintf(stderr, ">>> GPIO4_C0 Pushbutton Armed <<<\n");
+        } else {
+            fprintf(stderr, "Warning: Could not request GPIO4_C0 event (%s)\n", strerror(errno));
+        }
     }
-    set_serial_raw(ctx.cdc_fd);
 
-    pthread_create(&ctx.tx_thd, NULL, venc_tx_thread, &ctx);
-    pthread_create(&ctx.cap_thd, NULL, camera_capture_thread, &ctx);
-
-    while (!quit) sleep(1);
-
-    pthread_join(ctx.cap_thd, NULL);
-    pthread_join(ctx.tx_thd, NULL);
-
-    if (ctx.cdc_fd >= 0) close(ctx.cdc_fd);
-
-    enum v4l2_buf_type vtype = ctx.buf_type;
-    xioctl(ctx.v4l2_fd, VIDIOC_STREAMOFF, &vtype);
-    close(ctx.v4l2_fd);
-
-    if (ctx.ref_cfg) mpp_enc_ref_cfg_deinit(&ctx.ref_cfg);
-    if (ctx.enc_cfg) mpp_enc_cfg_deinit(ctx.enc_cfg);
-    if (ctx.mpp_ctx) mpp_destroy(ctx.mpp_ctx);
-
-    for (uint32_t i = 0; i < ctx.buf_count; ++i) {
-        if (ctx.buffers[i].mpp_buf) mpp_buffer_put(ctx.buffers[i].mpp_buf);
+    if (ctx.cfg.autostart) {
+        fprintf(stderr, ">>> Autostart enabled: starting VTX pipeline immediately <<<\n");
+        start_pipeline(&ctx);
+    } else {
+        fprintf(stderr, ">>> VTX in standby (0%% CPU). Press GPIO4_C0 or [ENTER] in SSH to start/stop <<<\n");
     }
-    if (ctx.buf_group) mpp_buffer_group_put(ctx.buf_group);
+
+    /* Non-blocking stdin read setup */
+    int stdin_has_tty = isatty(STDIN_FILENO);
+    if (stdin_has_tty) {
+        int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+        fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    while (!quit) {
+        struct pollfd pfds[2];
+        int num_pfds = 0;
+
+        if (gpio_event_fd >= 0) {
+            pfds[num_pfds].fd = gpio_event_fd;
+            pfds[num_pfds].events = POLLIN;
+            num_pfds++;
+        }
+        if (stdin_has_tty) {
+            pfds[num_pfds].fd = STDIN_FILENO;
+            pfds[num_pfds].events = POLLIN;
+            num_pfds++;
+        }
+
+        int ret = poll(pfds, num_pfds, 1000);
+        if (ret <= 0) continue;
+
+        bool toggle = false;
+
+        /* Check GPIO button */
+        if (gpio_event_fd >= 0 && (pfds[0].revents & POLLIN)) {
+            struct gpioevent_data ev;
+            while (read(gpio_event_fd, &ev, sizeof(ev)) > 0) {}
+            toggle = true;
+        }
+
+        /* Check SSH keyboard input */
+        if (stdin_has_tty) {
+            int stdin_idx = (gpio_event_fd >= 0) ? 1 : 0;
+            if (pfds[stdin_idx].revents & POLLIN) {
+                char dummy[64];
+                while (read(STDIN_FILENO, dummy, sizeof(dummy)) > 0) {}
+                toggle = true;
+            }
+        }
+
+        if (toggle) {
+            if (ctx.streaming) {
+                fprintf(stderr, ">>> Trigger: Stopping VTX <<<\n");
+                stop_pipeline(&ctx);
+            } else {
+                fprintf(stderr, ">>> Trigger: Starting VTX <<<\n");
+                start_pipeline(&ctx);
+            }
+        }
+    }
+
+    if (ctx.streaming) stop_pipeline(&ctx);
+    if (gpio_event_fd >= 0) close(gpio_event_fd);
+    if (gpio_chip_fd >= 0) close(gpio_chip_fd);
+    if (ctx.ep1_fd >= 0) close(ctx.ep1_fd);
+    
+
     pthread_mutex_destroy(&ctx.fifo_lock);
-
     return 0;
 }
