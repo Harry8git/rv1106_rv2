@@ -592,75 +592,60 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* 2. Standby / Arming Loop (GPIO4_C0 + SSH STDIN keyboard trigger) */
-    int gpio_chip_fd = open("/dev/gpiochip4", O_RDWR | O_NONBLOCK);
-    int gpio_event_fd = -1;
-
-    if (gpio_chip_fd >= 0) {
-        struct gpioevent_request req;
-        memset(&req, 0, sizeof(req));
-        req.lineoffset = 16;
-        req.handleflags = GPIOHANDLE_REQUEST_INPUT;
-        req.eventflags = GPIOEVENT_REQUEST_FALLING_EDGE;
-        strncpy(req.consumer_label, "vtx_btn", sizeof(req.consumer_label) - 1);
-
-        if (ioctl(gpio_chip_fd, GPIO_GET_LINEEVENT_IOCTL, &req) == 0) {
-            gpio_event_fd = req.fd;
-            fprintf(stderr, ">>> GPIO4_C0 Pushbutton Armed <<<\n");
-        } else {
-            fprintf(stderr, "Warning: Could not request GPIO4_C0 event (%s)\n", strerror(errno));
-        }
+    /* 2. Standby / Arming Loop (Onboard SARADC Button + STDIN keyboard trigger) */
+    const char *adc_path = "/sys/bus/iio/devices/iio:device0/in_voltage0_raw";
+    int adc_fd = open(adc_path, O_RDONLY);
+    if (adc_fd >= 0) {
+        fprintf(stderr, ">>> Onboard Pushbutton Armed (SARADC) <<<\n");
+    } else {
+        fprintf(stderr, "Warning: Could not open '%s': %s\n", adc_path, strerror(errno));
     }
 
     if (ctx.cfg.autostart) {
         fprintf(stderr, ">>> Autostart enabled: starting VTX pipeline immediately <<<\n");
         start_pipeline(&ctx);
     } else {
-        fprintf(stderr, ">>> VTX in standby (0%% CPU). Press GPIO4_C0 or [ENTER] in SSH to start/stop <<<\n");
+        fprintf(stderr, ">>> VTX in standby (0%% CPU). Press Button or [ENTER] in SSH to start/stop <<<\n");
     }
 
-    /* Non-blocking stdin read setup */
     int stdin_has_tty = isatty(STDIN_FILENO);
     if (stdin_has_tty) {
         int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
         fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
     }
 
+    bool btn_last_pressed = false;
+
     while (!quit) {
-        struct pollfd pfds[2];
-        int num_pfds = 0;
+        struct pollfd pfd;
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
 
-        if (gpio_event_fd >= 0) {
-            pfds[num_pfds].fd = gpio_event_fd;
-            pfds[num_pfds].events = POLLIN;
-            num_pfds++;
-        }
-        if (stdin_has_tty) {
-            pfds[num_pfds].fd = STDIN_FILENO;
-            pfds[num_pfds].events = POLLIN;
-            num_pfds++;
-        }
-
-        int ret = poll(pfds, num_pfds, 1000);
-        if (ret <= 0) continue;
+        int ret = poll(stdin_has_tty ? &pfd : NULL, stdin_has_tty ? 1 : 0, 100);
 
         bool toggle = false;
 
-        /* Check GPIO button */
-        if (gpio_event_fd >= 0 && (pfds[0].revents & POLLIN)) {
-            struct gpioevent_data ev;
-            while (read(gpio_event_fd, &ev, sizeof(ev)) > 0) {}
-            toggle = true;
+        /* Check ADC Pushbutton */
+        if (adc_fd >= 0) {
+            char val_str[16];
+            ssize_t n = pread(adc_fd, val_str, sizeof(val_str) - 1, 0);
+            if (n > 0) {
+                val_str[n] = '\0';
+                int val = atoi(val_str);
+                bool pressed = (val < 200);
+
+                if (pressed && !btn_last_pressed) {
+                    toggle = true;
+                }
+                btn_last_pressed = pressed;
+            }
         }
 
-        /* Check SSH keyboard input */
-        if (stdin_has_tty) {
-            int stdin_idx = (gpio_event_fd >= 0) ? 1 : 0;
-            if (pfds[stdin_idx].revents & POLLIN) {
-                char dummy[64];
-                while (read(STDIN_FILENO, dummy, sizeof(dummy)) > 0) {}
-                toggle = true;
-            }
+        /* Check SSH keyboard */
+        if (stdin_has_tty && ret > 0 && (pfd.revents & POLLIN)) {
+            char dummy[64];
+            while (read(STDIN_FILENO, dummy, sizeof(dummy)) > 0) {}
+            toggle = true;
         }
 
         if (toggle) {
@@ -675,8 +660,7 @@ int main(int argc, char **argv) {
     }
 
     if (ctx.streaming) stop_pipeline(&ctx);
-    if (gpio_event_fd >= 0) close(gpio_event_fd);
-    if (gpio_chip_fd >= 0) close(gpio_chip_fd);
+    if (adc_fd >= 0) close(adc_fd);
     if (ctx.ep1_fd >= 0) close(ctx.ep1_fd);
     
 

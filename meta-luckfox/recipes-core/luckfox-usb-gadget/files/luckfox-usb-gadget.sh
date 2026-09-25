@@ -27,7 +27,7 @@ echo "Pico Zero VTX" > strings/0x409/product
 
 # 1. CDC-NCM (Ethernet for SSH / Config)
 mkdir -p functions/ncm.usb0
-HASH=$(echo "$SERIAL" | md5sum | head -c 8)
+HASH=$(echo "$SERIAL" | md5sum | cut -c 1-8)
 DEV_MAC="12:22:$(echo $HASH | cut -c1-2):$(echo $HASH | cut -c3-4):$(echo $HASH | cut -c5-6):01"
 HOST_MAC="12:22:$(echo $HASH | cut -c1-2):$(echo $HASH | cut -c3-4):$(echo $HASH | cut -c5-6):02"
 echo "$DEV_MAC" > functions/ncm.usb0/dev_addr

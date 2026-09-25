@@ -1,0 +1,13 @@
+[Unit]
+Description=Luckfox VTX Video Streamer (Standby / GPIO Pushbutton Trigger)
+After=luckfox-usb-gadget.service rockchip-rkaiq-server.service
+Requires=luckfox-usb-gadget.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vtx
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
