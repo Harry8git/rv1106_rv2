@@ -184,35 +184,35 @@
 /* PWM1 M0*/
 &pwm1 {
 	status = "okay";
-	pinctrl-names = "default";
+	pinctrl-names = "active";
 	pinctrl-0 = <&pwm1m0_pins>;
 };
 
 /* PWM3 M1 on GPIO1_B0 */
 &pwm3 {
 	status = "okay";
-	pinctrl-names = "default";
+	pinctrl-names = "active";
 	pinctrl-0 = <&pwm3m1_pins>;
 };
 
 /* PWM7 M1 on GPIO1_B1 */
 &pwm7 {
 	status = "okay";
-	pinctrl-names = "default";
+	pinctrl-names = "active";
 	pinctrl-0 = <&pwm7m1_pins>;
 };
 
 /* PWM10 M1 on GPIO1_C6 */
 &pwm10 {
 	status = "okay";
-	pinctrl-names = "default";
+	pinctrl-names = "active";
 	pinctrl-0 = <&pwm10m1_pins>;
 };
 
 /* PWM11 M2 on GPIO1_D3 */
 &pwm11 {
 	status = "okay";
-	pinctrl-names = "default";
+	pinctrl-names = "active";
 	pinctrl-0 = <&pwm11m2_pins>;
 };
 
