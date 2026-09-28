@@ -131,7 +131,7 @@ int main(void) {
     /* Bring up Ethernet usb0 */
     system("if ip link show usb0 >/dev/null 2>&1; then "
            "  ip link set usb0 up && "
-           "  ip addr add 169.254.100.1/16 dev usb0 2>/dev/null || true; "
+           "  ip addr add 192.168.2.100/24 dev usb0 2>/dev/null || true; "
            "fi");
 
     fprintf(stderr, ">>> Luckfox USB Daemon: Composite Gadget Ready 24/7 <<<\n");

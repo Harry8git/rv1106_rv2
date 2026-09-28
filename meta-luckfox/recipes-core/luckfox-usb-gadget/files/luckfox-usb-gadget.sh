@@ -35,6 +35,7 @@ echo "$HOST_MAC" > functions/ncm.usb0/host_addr
 
 # 2. CDC-ACM (Serial for ArduPilot CRSF -> /dev/ttyGS0)
 mkdir -p functions/acm.GS0
+echo 0 > functions/acm.GS0/console
 
 # 3. FunctionFS (Vendor Class Bulk Endpoint for Video)
 mkdir -p functions/ffs.vtx
