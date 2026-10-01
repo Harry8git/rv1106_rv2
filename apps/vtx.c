@@ -474,7 +474,7 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:scaling_list", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_luma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
-    mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 0);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1); // Testing
 
     if (ctx->cfg.slicing) {
         mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);

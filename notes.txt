@@ -377,6 +377,7 @@ clang -O3 \
     -L/opt/homebrew/lib \
     -lavcodec -lavutil -lusb-1.0 \
     -framework Cocoa \
+    -framework Carbon \
     -framework Metal \
     -framework QuartzCore \
     -framework CoreVideo \
@@ -399,193 +400,11 @@ ls /dev/cu.usbmodem* 2>/dev/null
 
 
 
-/usr/bin/arduplane --serial0 tcp:0.0.0.0:5760:wait
-bitbake ardupilot -c compile -f
-scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/ardupilot/build/luckfox/bin/arduplane root@192.168.2.100:/usr/bin/arduplane
 
 
 
 
 VTX_SLICING=0 /usr/bin/vtx 2>&1 | grep -E "BACKLOG|CAMERA DROP|CDC|VTX:"
-
-
-
-
-
-vtx.c 
-Is it possible to reduce cpu usage by any possible way like refactoring or using interrupts instead of polling or avoid writting to registers if not needed or something else?
-
-Is the keyboard input done properly for a flight controller fpv piloting program? or should we be using some other library or method? Do not write any code yet, just tell me at a high level what is the most efficient way to do it so that it has a good feel, supports multiple buttons pressed simultaneously, does not pause after the first character like text, etc
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Help me configure and troubleshoot the link between MacBook and lnux SBC running Ardupilot
-Link protocol is CRSF over USB CDC. Two way, Control and telemetry
-
-
-
-Currently we have :
-
-in ~/rv2/meta-luckfox/recipes-core/luckfox-usb-gadget/files/luckfox-usb-gadget.sh we added:
-
-
-# 2. CDC-ACM (Serial for ArduPilot CRSF -> /dev/ttyGS0)
-mkdir -p functions/acm.GS0
-echo 0 > functions/acm.GS0/console
-
-in ~/rv2/meta-luckfox/recipes-kernel/linux/linux-rockchip-6.6.89/custom-features.cfg we have
-# --- Host USB Serial Support (External USB GPS / Radios) ---
-CONFIG_USB_ANNOUNCE_NEW_DEVICES=y
-CONFIG_USB_ACM=y
-CONFIG_USB_SERIAL=y
-CONFIG_USB_SERIAL_GENERIC=y
-
-
-In ~/rv2/apps/ardupilot/libraries/AP_HAL_Linux/hwdef/luckfox/defaults.parm we have
-# see /ardupilot/libraries/AP_SerialManager/AP_SerialManager.h
-# use --serial0 /dev/ttyGS? when launching
-SERIAL0_PROTOCOL    2 # 2 is MAVLink
-SERIAL0_BAUD        115
-# use --serial1 /dev/ttyGS? when launching
-SERIAL1_PROTOCOL    23 # 23 enables ArduPilot’s full bi-directional CRSF engine, should it be 29?
-SERIAL1_BAUD        115
-# use --serial3 /dev/ttyGS? when launching
-SERIAL3_PROTOCOL    5 # 5 is GPS
-SERIAL3_BAUD        115
-
-In ~/rv2/meta-luckfox/recipes-kernel/linux/linux-rockchip-6.6.89/configs/luckfox_rv1106_linux_defconfig we have
-CONFIG_USB=y
-CONFIG_USB_OTG=y
-CONFIG_USB_XHCI_HCD=y
-CONFIG_USB_EHCI_HCD=y
-CONFIG_USB_STORAGE=y
-CONFIG_USB_DWC3=y
-CONFIG_USB_SERIAL=y
-CONFIG_USB_SERIAL_CH343=y
-CONFIG_USB_GADGET=y
-CONFIG_U_SERIAL_CONSOLE=y
-CONFIG_USB_CONFIGFS=y
-CONFIG_USB_CONFIGFS_UEVENT=y
-CONFIG_USB_CONFIGFS_SERIAL=y
-CONFIG_USB_CONFIGFS_ACM=y
-CONFIG_USB_CONFIGFS_NCM=y
-CONFIG_USB_CONFIGFS_ECM=y
-CONFIG_USB_CONFIGFS_ECM_SUBSET=y
-
-Should we disable the console there too? we do not to interfere with the USB CDC-ACM device.
-
-
-In ~/rv2/apps/ardupilot/libraries/AP_HAL_Linux/HAL_Linux_Class.cpp we have
-#elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_PILOTPI
-static RCInput_RCProtocol rcinDriver{"/dev/ttyAMA0", NULL};
-#elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_LUCKFOX
-// Tells ArduPilot to parse CRSF/ELRS packets directly from USB CDC /dev/ttyGS*
-static RCInput_RCProtocol rcinDriver{nullptr, "/dev/ttyGS0"};
-#elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_VNAV || \
-      CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_NAVIGATOR || \
-      CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_NAVIO2 || \
-      CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_EDGE || \
-      CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_T3_GEM_O1
-// this is needed to allow for RC input using SERIALn_PROTOCOL=23. No fd is opened
-// in the linux driver and instead user needs to provide a uart via SERIALn_PROTOCOL
-static RCInput_RCProtocol rcinDriver{nullptr, nullptr};
-#else
-static RCInput rcinDriver;
-#endif
-
-We checked, the constructor is RCInput_RCProtocol::RCInput_RCProtocol(const char *_dev_inverted, const char *_dev_115200)
-We build using bitbake ardupilot -c compile -f
-
-The Macbook program for sending control and receiving telemetry is at /Users/hspencer/Documents/FPV/main.m
-We configure the port using:
-            struct termios tty;
-            memset(&tty, 0, sizeof(tty));
-            if (tcgetattr(fd, &tty) == 0) {
-                cfsetspeed(&tty, ARDUPILOT_BAUD);
-                tty.c_cflag |= (CLOCAL | CREAD);
-                tty.c_cflag &= ~CSIZE;
-                tty.c_cflag |= CS8;
-                tty.c_cflag &= ~PARENB;
-                tty.c_cflag &= ~CSTOPB;
-                tty.c_cflag &= ~CRTSCTS; /* CRITICAL: Disable RTS/CTS hardware flow control */
-                tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
-                tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-                tty.c_oflag &= ~OPOST;
-                tcsetattr(fd, TCSANOW, &tty);
-
-                /* Assert DTR & RTS so Linux CDC-ACM brings up the carrier */
-                int modem_ctrl = TIOCM_DTR | TIOCM_RTS;
-                ioctl(fd, TIOCMBIS, &modem_ctrl);
-            }
-
-
-we compile it with
-clang -O3 \
-    -I/opt/homebrew/include \
-    -L/opt/homebrew/lib \
-    -lavcodec -lavutil -lusb-1.0 \
-    -framework Cocoa \
-    -framework Metal \
-    -framework QuartzCore \
-    -framework CoreVideo \
-    -framework CoreText \
-    -o fpv_pilot main.m
-
-We run it with:
-./fpv_pilot /dev/cu.usbmodem103
-
-It outputs:
-
-[video-diag] Connected! Claimed interface 4, listening on endpoint 0x85
-[serial-diag] Write error: Resource temporarily unavailable (errno 35)
-[serial-diag] Write error: Resource temporarily unavailable (errno 35)
-[serial-diag] TX CRSF: 720 pkts | RX Telem: 0 bytes
-[serial-diag] Write error: Resource temporarily unavailable (errno 35)
-[serial-diag] Write error: Resource temporarily unavailable (errno 35)
-[serial-diag] TX CRSF: 1331 pkts | RX Telem: 0 bytes
-[serial-diag] Write error: Resource temporarily unavailable (errno 35)
-[serial-diag] Write error: Resource temporarily unavailable (errno 35)
-[serial-diag] TX CRSF: 1942 pkts | RX Telem: 0 bytes
-
-
-
-I usually launch ardupilot using 
-/usr/bin/arduplane --serial0 tcp:0.0.0.0:5760:wait 
-and connect to the mavlink using QGroundControl which reports No RC
-
-
-Let's troubleshot interactively, give me a group of commands to run per machine, Mac or Linux board or Orbstack environment and I will provide you with the output when you want. One small step at a time
-We can add debug code in our mac program or in ardupilot
-
-
-Also use git to compare ardupilot with the upstream to see what we changed so far, by the way one minor issue is that after ardupilot reports connected, it hangs for 30 to 40 seconds before continuing with Baro calibration etc. We can troubleshoot that after the CRSF
-
-
-
-
-
 
 
 
@@ -599,3 +418,15 @@ fuser /dev/ttyGS0
 
 
 ssh root@fe80::1022:1ff:fe66:4901%en10
+
+rm -f /var/lib/ardupilot/* /root/storage.bin /root/*.stg ./storage.bin
+
+bitbake ardupilot -c compile -f
+scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/ardupilot/build/luckfox/bin/arduplane root@192.168.2.100:/usr/bin/arduplane
+
+
+/usr/bin/arduplane --serial0 tcp:0.0.0.0:5760:wait --serial1 /dev/ttyGS0 --defaults /path/to/defaults.parm
+
+
+
+
