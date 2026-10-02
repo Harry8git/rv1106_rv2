@@ -87,7 +87,6 @@ typedef struct {
     uint32_t    bitrate_kbps;
     uint32_t    gop;
     int         codec_type;
-    int         slicing;
     bool        autostart;
 } VtxConfig;
 
@@ -476,15 +475,10 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1); // Testing
 
-    if (ctx->cfg.slicing) {
-        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
-        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
-        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);
-    } else {
-        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_NONE);
-        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 0);
-        mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 0);
-    }
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);
+
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
     if (ret != MPP_OK) return -1;
@@ -575,9 +569,6 @@ int main(int argc, char **argv) {
     ctx.cfg.bitrate_kbps = 2400;
     ctx.cfg.gop = 65536;
     ctx.cfg.codec_type = MPP_VIDEO_CodingHEVC;
-
-    const char *slice_env = getenv("VTX_SLICING");
-    ctx.cfg.slicing = slice_env ? (atoi(slice_env) != 0) : 0;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-i") || !strcmp(argv[i], "--immediate"))

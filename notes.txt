@@ -356,7 +356,9 @@ systemctl stop luckfox-vtx.service
 
 cd ~/rv2
 bitbake -c compile -f luckfox-vtx
-scp ~/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx root@169.254.100.1:/usr/bin/vtx
+scp ~/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx root@192.168.2.100:/usr/bin/vtx
+
+systemctl start luckfox-vtx.service
 
 
 
