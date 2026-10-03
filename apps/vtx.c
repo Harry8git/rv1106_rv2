@@ -43,8 +43,8 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   2
-#define FIFO_SIZE          2
+#define MAX_V4L2_BUFFERS   4
+#define FIFO_SIZE          4
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 #define FFS_EP0_PATH       "/dev/usb-ffs/vtx/ep0"
@@ -145,16 +145,19 @@ static int xioctl(int fh, int request, void *arg) {
  * USB Bulk Writer (Zero-blocking, drop-on-stall for live VTX)
  * ---------------------------------------------------------------------------- */
 static inline int bulk_write_all(int fd, const uint8_t *buf, size_t len) {
-    size_t total_written = 0;
+    /* Check if USB endpoint is ready to accept data without blocking (0ms timeout) */
+    struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+    int p_ret = poll(&pfd, 1, 0);
+    if (p_ret <= 0) {
+        /* Host is not reading or endpoint buffer full: drop instantly to prevent stalls */
+        return -1;
+    }
 
+    size_t total_written = 0;
     while (total_written < len && !quit) {
         ssize_t n = write(fd, buf + total_written, len - total_written);
         if (n < 0) {
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /* Host is not reading endpoint: drop frame immediately to prevent stalls */
-                return -1;
-            }
             return -1;
         }
         total_written += (size_t)n;
@@ -235,18 +238,21 @@ static void *camera_capture_thread(void *arg) {
         mpp_frame_set_buffer(frame, ctx->buffers[idx].mpp_buf);
         mpp_frame_set_pts(frame, (uint64_t)cap_cnt * 1000000ULL / ctx->cfg.fps);
 
-        MPP_RET put_ret;
-        do {
-            put_ret = ctx->mpi->encode_put_frame(ctx->mpp_ctx, frame);
-            if (put_ret != MPP_OK)
-                usleep(500);
-        } while (put_ret != MPP_OK && !quit && ctx->streaming);
-
+        MPP_RET put_ret = ctx->mpi->encode_put_frame(ctx->mpp_ctx, frame);
         if (put_ret == MPP_OK) {
             pthread_mutex_lock(&ctx->fifo_lock);
             ctx->fifo[ctx->fifo_head] = idx;
             ctx->fifo_head = (ctx->fifo_head + 1) % FIFO_SIZE;
             pthread_mutex_unlock(&ctx->fifo_lock);
+        } else {
+            /* If rejected, immediately return buffer to camera so ISP never starves */
+            if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+                planes[0].m.fd = ctx->buffers[idx].dma_fd;
+                planes[0].length = ctx->buffers[idx].length;
+            } else {
+                buf.m.fd = ctx->buffers[idx].dma_fd;
+            }
+            xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf);
         }
 
         mpp_frame_deinit(&frame);
@@ -277,7 +283,7 @@ static void *venc_tx_thread(void *arg) {
         MPP_RET ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
 
         if (ret != MPP_OK || !packet) {
-            usleep(300);
+            /* Timed out or no packet ready yet; loop back cleanly */
             continue;
         }
 
@@ -347,6 +353,30 @@ static void *venc_tx_thread(void *arg) {
         }
     }
     return NULL;
+}
+
+static void configure_sensor_exposure(void) {
+    int fd = open("/dev/v4l-subdev2", O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr, "Warning: Could not open /dev/v4l-subdev2 to set exposure\n");
+        return;
+    }
+
+    struct v4l2_control ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+
+    /* Set short exposure (250 lines ~ 3.7ms) */
+    ctrl.id = V4L2_CID_EXPOSURE;
+    ctrl.value = 250;
+    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+
+    /* Set analogue gain to compensate brightness */
+    ctrl.id = V4L2_CID_ANALOGUE_GAIN;
+    ctrl.value = 35;
+    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+
+    close(fd);
+    fprintf(stderr, ">>> IMX462 Low-Latency Exposure Applied (exp=250, gain=35) <<<\n");
 }
 
 static int start_pipeline(VtxContext *ctx) {
@@ -431,12 +461,12 @@ static int start_pipeline(VtxContext *ctx) {
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
 
-    MppPollType timeout = MPP_POLL_NON_BLOCK;
-    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &timeout);
-    if (ret != MPP_OK) return -1;
+    /* 1. Configure sensor low-latency exposure automatically */
+    configure_sensor_exposure();
 
-    timeout = MPP_POLL_BLOCK;
-    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout);
+    /* 2. Hardware interrupt output timeout (20ms) - Zero CPU usage while encoding */
+    RK_S64 out_timeout = 20;
+    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &out_timeout);
     if (ret != MPP_OK) return -1;
 
     ret = mpp_init(ctx->mpp_ctx, MPP_CTX_ENC, (MppCodingType)ctx->cfg.codec_type);
@@ -475,10 +505,13 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1); // Testing
 
-    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
+    /*mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
-    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);
-
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);*/
+    
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_NONE);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 0);
+    mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 0);
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
     if (ret != MPP_OK) return -1;
