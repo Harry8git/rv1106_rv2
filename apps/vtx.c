@@ -43,8 +43,8 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   4
-#define FIFO_SIZE          4
+#define MAX_V4L2_BUFFERS   2
+#define FIFO_SIZE          2
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 #define FFS_EP0_PATH       "/dev/usb-ffs/vtx/ep0"
@@ -503,9 +503,9 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:scaling_list", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_luma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
-    mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1); // Testing
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1); 
 
-    /*mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU);
+    /*mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU); // Tested, did not improve latency
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 1);*/
     
