@@ -246,14 +246,20 @@ static void *camera_capture_thread(void *arg) {
         mpp_frame_set_buffer(frame, ctx->buffers[idx].mpp_buf);
         mpp_frame_set_pts(frame, (uint64_t)cap_cnt * 1000000ULL / ctx->cfg.fps);
 
+        /* 1. Register buffer index in FIFO BEFORE submitting to encoder to avoid race conditions */
+        pthread_mutex_lock(&ctx->fifo_lock);
+        ctx->fifo[ctx->fifo_head] = idx;
+        ctx->fifo_head = (ctx->fifo_head + 1) % FIFO_SIZE;
+        pthread_mutex_unlock(&ctx->fifo_lock);
+
+        /* 2. Submit frame to MPP encoder */
         MPP_RET put_ret = ctx->mpi->encode_put_frame(ctx->mpp_ctx, frame);
-        if (put_ret == MPP_OK) {
+        if (put_ret != MPP_OK) {
+            /* If rejected, roll back FIFO and return buffer immediately to camera */
             pthread_mutex_lock(&ctx->fifo_lock);
-            ctx->fifo[ctx->fifo_head] = idx;
-            ctx->fifo_head = (ctx->fifo_head + 1) % FIFO_SIZE;
+            ctx->fifo_head = (ctx->fifo_head + FIFO_SIZE - 1) % FIFO_SIZE;
             pthread_mutex_unlock(&ctx->fifo_lock);
-        } else {
-            /* If rejected, immediately return buffer to camera so ISP never starves */
+
             if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
                 planes[0].m.fd = ctx->buffers[idx].dma_fd;
                 planes[0].length = ctx->buffers[idx].length;
@@ -318,6 +324,7 @@ static void *venc_tx_thread(void *arg) {
         if (frame_complete) {
             first_pkt_of_frame = 1;
 
+            /* Safely dequeue the completed buffer index */
             pthread_mutex_lock(&ctx->fifo_lock);
             int return_idx = ctx->fifo[ctx->fifo_tail];
             ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
