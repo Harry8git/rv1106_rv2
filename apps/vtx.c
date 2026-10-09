@@ -456,7 +456,7 @@ static int start_pipeline(VtxContext *ctx) {
 
     enum v4l2_buf_type type = ctx->buf_type;
     if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
-    usleep(100000);
+    usleep(50000);
 
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
@@ -513,6 +513,10 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 0);
 
+
+    /*RK_S64 in_timeout = 0; // 0 ms = non-blocking
+    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &in_timeout);*/
+
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
     if (ret != MPP_OK) return -1;
 
@@ -564,21 +568,49 @@ static void stop_pipeline(VtxContext *ctx) {
     if (!ctx->streaming) return;
     ctx->streaming = false;
 
+    /* 1. Stop capture and transmission worker threads first */
     pthread_join(ctx->cap_thd, NULL);
     pthread_join(ctx->tx_thd, NULL);
 
-    enum v4l2_buf_type vtype = ctx->buf_type;
-    xioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &vtype);
-    close(ctx->v4l2_fd);
-
-    if (ctx->ref_cfg) mpp_enc_ref_cfg_deinit(&ctx->ref_cfg);
-    if (ctx->enc_cfg) mpp_enc_cfg_deinit(ctx->enc_cfg);
-    if (ctx->mpp_ctx) mpp_destroy(ctx->mpp_ctx);
-
-    for (uint32_t i = 0; i < ctx->buf_count; ++i) {
-        if (ctx->buffers[i].mpp_buf) mpp_buffer_put(ctx->buffers[i].mpp_buf);
+    /* 2. Stop camera hardware stream */
+    if (ctx->v4l2_fd >= 0) {
+        enum v4l2_buf_type vtype = ctx->buf_type;
+        xioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &vtype);
+        close(ctx->v4l2_fd);
+        ctx->v4l2_fd = -1;
     }
-    if (ctx->buf_group) mpp_buffer_group_put(ctx->buf_group);
+
+    /* 3. Destroy MPP encoder before releasing memory buffers */
+    if (ctx->ref_cfg) {
+        mpp_enc_ref_cfg_deinit(&ctx->ref_cfg);
+        ctx->ref_cfg = NULL;
+    }
+    if (ctx->enc_cfg) {
+        mpp_enc_cfg_deinit(ctx->enc_cfg);
+        ctx->enc_cfg = NULL;
+    }
+    if (ctx->mpp_ctx) {
+        mpp_destroy(ctx->mpp_ctx);
+        ctx->mpp_ctx = NULL;
+    }
+
+    /* 4. Safely release camera buffers and reset pointers */
+    for (uint32_t i = 0; i < ctx->buf_count; ++i) {
+        if (ctx->buffers[i].mpp_buf) {
+            mpp_buffer_put(ctx->buffers[i].mpp_buf);
+            ctx->buffers[i].mpp_buf = NULL;
+        }
+    }
+    if (ctx->buf_group) {
+        mpp_buffer_group_put(ctx->buf_group);
+        ctx->buf_group = NULL;
+    }
+
+    /* Reset FIFO indices */
+    pthread_mutex_lock(&ctx->fifo_lock);
+    ctx->fifo_head = 0;
+    ctx->fifo_tail = 0;
+    pthread_mutex_unlock(&ctx->fifo_lock);
 }
 
 static void sigusr1_handler(int sig) {
