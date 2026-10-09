@@ -194,7 +194,10 @@ static void *camera_capture_thread(void *arg) {
     uint32_t hor_stride = MPP_ALIGN(ctx->cfg.width, 16);
     uint32_t ver_stride = MPP_ALIGN(ctx->cfg.height, 16);
     uint32_t cap_cnt = 0;
-    static uint32_t last_seq = 0;
+    
+    /* Reset sequence counter cleanly every time the thread starts */
+    uint32_t last_seq = 0;
+    bool first_frame = true;
 
     while (!quit && ctx->streaming) {
         struct pollfd pfd = { .fd = ctx->v4l2_fd, .events = POLLIN };
@@ -220,9 +223,14 @@ static void *camera_capture_thread(void *arg) {
             continue;
         }
 
-        if (last_seq != 0 && buf.sequence != last_seq + 1) {
-            fprintf(stderr, ">>> CAMERA DROP: missed %u frame(s)! (seq %u vs %u) <<<\n",
-                    buf.sequence - (last_seq + 1), buf.sequence, last_seq + 1);
+        /* Detect dropped frames without unsigned integer underflow */
+        if (!first_frame) {
+            if (buf.sequence > last_seq + 1) {
+                fprintf(stderr, ">>> CAMERA DROP: missed %u frame(s)! (seq %u vs expected %u) <<<\n",
+                        buf.sequence - (last_seq + 1), buf.sequence, last_seq + 1);
+            }
+        } else {
+            first_frame = false;
         }
         last_seq = buf.sequence;
 
@@ -513,9 +521,6 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 0);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:out", 0);
 
-
-    /*RK_S64 in_timeout = 0; // 0 ms = non-blocking
-    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &in_timeout);*/
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
     if (ret != MPP_OK) return -1;
