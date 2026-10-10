@@ -396,10 +396,6 @@ clang -O3 \
 ls /dev/cu.usbmodem* 2>/dev/null
 ./fpv_pilot /dev/cu.usbmodem103
 
-/usr/bin/arduplane --defaults /etc/ardupilot.parm --serial0 /dev/ttyGS0 --serial1 tcp:0.0.0.0:5760:wait
-/usr/bin/arduplane --defaults /etc/ardupilot.parm --serial0 tcp:0.0.0.0:5760:wait --serial2 /dev/ttyGS0
-
-
 
 
 
@@ -426,9 +422,14 @@ rm -f /var/lib/ardupilot/* /root/storage.bin /root/*.stg ./storage.bin
 bitbake ardupilot -c compile -f
 scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/ardupilot/build/luckfox/bin/arduplane root@192.168.2.100:/usr/bin/arduplane
 
+/usr/bin/arduplane --defaults /etc/ardupilot.parm --serial0 tcp:0.0.0.0:5760:wait --serial1 /dev/ttyGS0
 
-/usr/bin/arduplane --serial0 tcp:0.0.0.0:5760:wait --serial1 /dev/ttyGS0 --defaults /path/to/defaults.parm
+scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/ardupilot/libraries/AP_HAL_Linux/hwdef/luckfox/defaults.parm root@192.168.2.100:/etc/ardupilot.parm
 
 
+top -d 1 | grep vtx
+
+systemctl stop luckfox-vtx.service
+systemctl start luckfox-vtx.service
 
 

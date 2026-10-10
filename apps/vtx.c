@@ -43,8 +43,8 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   2
-#define FIFO_SIZE          2
+#define MAX_V4L2_BUFFERS   3
+#define FIFO_SIZE          3
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 #define FFS_EP0_PATH       "/dev/usb-ffs/vtx/ep0"
@@ -142,25 +142,33 @@ static int xioctl(int fh, int request, void *arg) {
 }
 
 /* ----------------------------------------------------------------------------
- * USB Bulk Writer (Zero-blocking, drop-on-stall for live VTX)
+ * USB Bulk Writer (Clean exit on stop signals without hanging)
  * ---------------------------------------------------------------------------- */
-static inline int bulk_write_all(int fd, const uint8_t *buf, size_t len) {
-    /* Check if USB endpoint is ready to accept data without blocking (0ms timeout) */
-    struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-    int p_ret = poll(&pfd, 1, 0);
-    if (p_ret <= 0) {
-        /* Host is not reading or endpoint buffer full: drop instantly to prevent stalls */
-        return -1;
-    }
+static inline int bulk_write_all(VtxContext *ctx, const uint8_t *buf, size_t len) {
+    if (!ctx || ctx->ep1_fd < 0 || !buf || len == 0) return 0;
 
     size_t total_written = 0;
-    while (total_written < len && !quit) {
-        ssize_t n = write(fd, buf + total_written, len - total_written);
-        if (n < 0) {
-            if (errno == EINTR) continue;
+    while (total_written < len && !quit && ctx->streaming) {
+        ssize_t n = write(ctx->ep1_fd, buf + total_written, len - total_written);
+        if (n > 0) {
+            total_written += (size_t)n;
+        } else if (n < 0) {
+            if (errno == EINTR) {
+                if (quit || !ctx->streaming) return -1;
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Allow up to 100ms for host USB scheduling jitter */
+                struct pollfd pfd = { .fd = ctx->ep1_fd, .events = POLLOUT };
+                int pr = poll(&pfd, 1, 100);
+                if (pr <= 0) {
+                    fprintf(stderr, "USB write timeout! Dropped %zu bytes\n", len - total_written);
+                    return -1;
+                }
+                continue;
+            }
             return -1;
         }
-        total_written += (size_t)n;
     }
     return (int)total_written;
 }
@@ -297,7 +305,6 @@ static void *venc_tx_thread(void *arg) {
         MPP_RET ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
 
         if (ret != MPP_OK || !packet) {
-            /* Timed out or no packet ready yet; loop back cleanly */
             continue;
         }
 
@@ -309,11 +316,11 @@ static void *venc_tx_thread(void *arg) {
         if (ptr && len > 0) {
             if (first_pkt_of_frame && ctx->hdr_len > 0 &&
                 (frame_cnt == 0 || frame_cnt % 60 == 0)) {
-                bulk_write_all(ctx->ep1_fd, ctx->hdr_buf, ctx->hdr_len);
+                bulk_write_all(ctx, ctx->hdr_buf, ctx->hdr_len);
                 total_bytes += ctx->hdr_len;
             }
 
-            bulk_write_all(ctx->ep1_fd, (const uint8_t *)ptr, len);
+            bulk_write_all(ctx, (const uint8_t *)ptr, len);
             total_bytes += len;
             first_pkt_of_frame = 0;
         }
@@ -324,7 +331,6 @@ static void *venc_tx_thread(void *arg) {
         if (frame_complete) {
             first_pkt_of_frame = 1;
 
-            /* Safely dequeue the completed buffer index */
             pthread_mutex_lock(&ctx->fifo_lock);
             int return_idx = ctx->fifo[ctx->fifo_tail];
             ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
@@ -471,7 +477,7 @@ static int start_pipeline(VtxContext *ctx) {
 
     enum v4l2_buf_type type = ctx->buf_type;
     if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
-    usleep(50000);
+    //usleep(100000);
 
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
@@ -580,7 +586,11 @@ static void stop_pipeline(VtxContext *ctx) {
     if (!ctx->streaming) return;
     ctx->streaming = false;
 
-    /* 1. Stop capture and transmission worker threads first */
+    /* Instantly wake up worker threads if blocked in write() or poll() */
+    pthread_kill(ctx->cap_thd, SIGUSR1);
+    pthread_kill(ctx->tx_thd, SIGUSR1);
+
+    /* 1. Join threads cleanly */
     pthread_join(ctx->cap_thd, NULL);
     pthread_join(ctx->tx_thd, NULL);
 
