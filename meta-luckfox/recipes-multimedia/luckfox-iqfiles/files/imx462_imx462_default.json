@@ -459,7 +459,7 @@
 							},
 							"autoPara":	{
 								"rawSelectPara":	{
-									"frameChooseMode":	"CALIB_AWB_INPUT_BAYERNR",
+									"frameChooseMode":	"CALIB_AWB_INPUT_RAW_AUTO",
 									"frameChoose":	0
 								},
 								"blc2ForAwb":	{

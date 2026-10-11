@@ -477,7 +477,7 @@ static int start_pipeline(VtxContext *ctx) {
 
     enum v4l2_buf_type type = ctx->buf_type;
     if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
-    //usleep(100000);
+    usleep(100000);
 
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
