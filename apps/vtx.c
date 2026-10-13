@@ -43,13 +43,16 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   3
-#define FIFO_SIZE          3
+#define MAX_V4L2_BUFFERS   4
+#define FIFO_SIZE          4
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 #define FFS_EP0_PATH       "/dev/usb-ffs/vtx/ep0"
 #define FFS_EP1_PATH       "/dev/usb-ffs/vtx/ep1"
 #define GADGET_UDC_PATH    "/sys/kernel/config/usb_gadget/g1/UDC"
+
+/* 8-byte Framing Header: Magic (4B) + Length (4B, Little-Endian) */
+static const uint8_t VTX_MAGIC[4] = { 0xAA, 0x55, 0x56, 0x31 };
 
 struct ffs_desc_full {
     struct usb_functionfs_descs_head_v2 header;
@@ -140,6 +143,28 @@ static int xioctl(int fh, int request, void *arg) {
     } while (r == -1 && errno == EINTR);
     return r;
 }
+
+
+static uint8_t s_tx_buf[256 * 1024];
+
+static inline int bulk_write_frame(VtxContext *ctx, const uint8_t *hdr, size_t hdr_len,
+                                   const uint8_t *slice, size_t slice_len) {
+    if (!ctx || ctx->ep1_fd < 0 || !slice || slice_len == 0) return 0;
+
+    size_t total = hdr_len + slice_len;
+    if (total > sizeof(s_tx_buf)) return -1;
+
+    /* Prepend headers if present (every 60 frames), then the slice */
+    if (hdr && hdr_len > 0) {
+        memcpy(s_tx_buf, hdr, hdr_len);
+    }
+    memcpy(s_tx_buf + hdr_len, slice, slice_len);
+
+    /* Single atomic USB bulk transfer: no extra headers, zero waste */
+    ssize_t n = write(ctx->ep1_fd, s_tx_buf, total);
+    return (int)n;
+}
+
 
 /* ----------------------------------------------------------------------------
  * USB Bulk Writer (Clean exit on stop signals without hanging)
@@ -298,8 +323,6 @@ static void *venc_tx_thread(void *arg) {
     struct timespec last_time, cur_time;
     clock_gettime(CLOCK_MONOTONIC, &last_time);
 
-    int first_pkt_of_frame = 1;
-
     while (!quit && ctx->streaming) {
         MppPacket packet = NULL;
         MPP_RET ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
@@ -314,23 +337,23 @@ static void *venc_tx_thread(void *arg) {
         int eoi = mpp_packet_is_eoi(packet);
 
         if (ptr && len > 0) {
-            if (first_pkt_of_frame && ctx->hdr_len > 0 &&
-                (frame_cnt == 0 || frame_cnt % 60 == 0)) {
-                bulk_write_all(ctx, ctx->hdr_buf, ctx->hdr_len);
-                total_bytes += ctx->hdr_len;
+            const uint8_t *send_hdr = NULL;
+            size_t send_hdr_len = 0;
+
+            /* Periodic VPS/SPS/PPS injection: atomically bundled with the P-frame */
+            if (ctx->hdr_len > 0 && (frame_cnt == 0 || frame_cnt % 60 == 0)) {
+                send_hdr = ctx->hdr_buf;
+                send_hdr_len = ctx->hdr_len;
             }
 
-            bulk_write_all(ctx, (const uint8_t *)ptr, len);
-            total_bytes += len;
-            first_pkt_of_frame = 0;
+            bulk_write_frame(ctx, send_hdr, send_hdr_len, (const uint8_t *)ptr, len);
+            total_bytes += (send_hdr_len + len + 8);
         }
 
         mpp_packet_deinit(&packet);
 
         int frame_complete = partition ? eoi : 1;
         if (frame_complete) {
-            first_pkt_of_frame = 1;
-
             pthread_mutex_lock(&ctx->fifo_lock);
             int return_idx = ctx->fifo[ctx->fifo_tail];
             ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
@@ -361,7 +384,7 @@ static void *venc_tx_thread(void *arg) {
             if (frame_cnt % 60 == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &cur_time);
                 double elapsed = (cur_time.tv_sec - last_time.tv_sec) +
-                                 (cur_time.tv_nsec - last_time.tv_nsec) / 1000000000.0;
+                                 (cur_time.tv_nsec - last_time.tv_nsec) / 1e9;
                 double real_fps = 60.0 / elapsed;
 
                 printf(">>> VTX USB-BULK: %u frames | Real FPS: %.1f | Bitrate: %.1f Kbps <<<\n",
