@@ -152,7 +152,7 @@ static inline int bulk_write_frame(VtxContext *ctx, const uint8_t *hdr, size_t h
     if (!ctx || ctx->ep1_fd < 0 || !slice || slice_len == 0) return 0;
 
     size_t total = hdr_len + slice_len;
-    if (total > sizeof(s_tx_buf)) return -1;
+    if (total > sizeof(s_tx_buf) - 2) return -1;
 
     /* Prepend headers if present (every 60 frames), then the slice */
     if (hdr && hdr_len > 0) {
@@ -160,9 +160,34 @@ static inline int bulk_write_frame(VtxContext *ctx, const uint8_t *hdr, size_t h
     }
     memcpy(s_tx_buf + hdr_len, slice, slice_len);
 
-    /* Single atomic USB bulk transfer: no extra headers, zero waste */
-    ssize_t n = write(ctx->ep1_fd, s_tx_buf, total);
-    return (int)n;
+    /* 1. Prevent USB transfer merging:
+     * If total is an exact multiple of 512, append 1 trailing zero byte
+     * (valid H.265 trailing padding) so the transfer ALWAYS ends with a short packet. */
+    if ((total % 512) == 0) {
+        s_tx_buf[total++] = 0x00;
+    }
+
+    /* 2. Guaranteed delivery: poll on EAGAIN so no P-frame is ever dropped */
+    size_t written = 0;
+    while (written < total && !quit && ctx->streaming) {
+        ssize_t n = write(ctx->ep1_fd, s_tx_buf + written, total - written);
+        if (n > 0) {
+            written += (size_t)n;
+        } else if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd = { .fd = ctx->ep1_fd, .events = POLLOUT };
+                int pr = poll(&pfd, 1, 25);
+                if (pr <= 0) {
+                    fprintf(stderr, "[vtx] USB write timeout! Dropped %zu B\n", total - written);
+                    return -1;
+                }
+                continue;
+            }
+            return -1;
+        }
+    }
+    return (int)written;
 }
 
 
