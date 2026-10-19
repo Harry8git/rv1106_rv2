@@ -435,6 +435,11 @@ static void configure_sensor_exposure(void) {
     memset(&ctrl, 0, sizeof(ctrl));
 
     /* Set short exposure (250 lines ~ 3.7ms) */
+    /* Ensure vertical blanking >= 1000us (90 lines) */
+    ctrl.id = V4L2_CID_VBLANK;
+    ctrl.value = 90;
+    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+
     ctrl.id = V4L2_CID_EXPOSURE;
     ctrl.value = 250;
     ioctl(fd, VIDIOC_S_CTRL, &ctrl);
@@ -524,6 +529,9 @@ static int start_pipeline(VtxContext *ctx) {
     }
 
     enum v4l2_buf_type type = ctx->buf_type;
+    /* Configure sensor exposure and blanking BEFORE stream start */
+    configure_sensor_exposure();
+
     if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
     usleep(100000);
 
@@ -531,7 +539,6 @@ static int start_pipeline(VtxContext *ctx) {
     if (ret != MPP_OK) return -1;
 
     /* 1. Configure sensor low-latency exposure automatically */
-    configure_sensor_exposure();
 
     /* 2. Hardware interrupt output timeout (20ms) - Zero CPU usage while encoding */
     RK_S64 out_timeout = 20;

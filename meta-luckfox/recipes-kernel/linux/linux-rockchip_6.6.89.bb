@@ -47,9 +47,15 @@ do_kernel_metadata:prepend() {
         [ -e "$f" ] && cp "$f" "${S}/arch/arm/boot/dts/rockchip/"
     done
 
-    if [ -f "${UNPACKDIR}/imx290.c" ]; then
-        cp -f "${UNPACKDIR}/imx290.c" "${S}/drivers/media/i2c/imx290.c"
-    fi
+    for src in "${UNPACKDIR}/imx290.c" "${WORKDIR}/imx290.c"; do
+        [ -f "$src" ] && cp -f "$src" "${S}/drivers/media/i2c/imx290.c"
+    done
+}
+
+do_configure:prepend() {
+    for src in "${UNPACKDIR}/imx290.c" "${WORKDIR}/imx290.c"; do
+        [ -f "$src" ] && cp -f "$src" "${S}/drivers/media/i2c/imx290.c"
+    done
 }
 
 do_compile:append() {

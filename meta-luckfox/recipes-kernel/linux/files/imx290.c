@@ -251,9 +251,11 @@ static int imx290_start_streaming(struct imx290 *imx290)
 static int imx290_stop_streaming(struct imx290 *imx290)
 {
 	int ret = 0;
-	imx290_write(imx290, IMX290_STANDBY, 0x01, &ret);
-	msleep(20);
-	return imx290_write(imx290, IMX290_XMSTA, 0x01, &ret);
+	/* Stop master clock first so current frame drains cleanly */
+	imx290_write(imx290, IMX290_XMSTA, 0x01, &ret);
+	msleep(35);
+	/* Then enter standby */
+	return imx290_write(imx290, IMX290_STANDBY, 0x01, &ret);
 }
 
 static int imx290_set_ctrl(struct v4l2_ctrl *ctrl)
@@ -470,7 +472,7 @@ static int imx290_probe(struct i2c_client *client)
 	v4l2_ctrl_handler_init(&imx290->ctrls, 5);
 	imx290->gain = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_ANALOGUE_GAIN, 0, 98, 1, 0);
 	imx290->exposure = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_EXPOSURE, 1, 1123, 1, 1000);
-	imx290->vblank = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_VBLANK, 45, 0x3ffff - 1080, 1, 45);
+	imx290->vblank = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_VBLANK, 45, 0x3ffff - 1080, 1, 90);
 	imx290->hblank = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_HBLANK, 280, 0xffff - 1920, 1, 280);
 	imx290->link_freq = v4l2_ctrl_new_int_menu(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_LINK_FREQ, 0, 0, link_freq_2lanes);
 	if (imx290->link_freq) imx290->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;

@@ -444,12 +444,12 @@
 						"wb_v32":	{
 							"control":	{
 								"byPass":	0,
-								"mode":	"CALIB_WB_MODE_AUTO"
+								"mode":	"CALIB_WB_MODE_MANUAL"
 							},
 							"manualPara":	{
 								"mode":	"CALIB_MWB_MODE_WBGAIN",
 								"cfg":	{
-									"mwbGain":	[1.23141, 1, 1, 3.12931],
+									"mwbGain":	[1.10, 1.00, 1.00, 1.45],
 									"scene":	"CALIB_WB_SCENE_CLOUDY_DAYLIGHT",
 									"cct":	{
 										"CCT":	5000,
@@ -2046,8 +2046,8 @@
 							"param":	{
 								"enable":	1,
 								"brightness":	128,
-								"contrast":	148,
-								"saturation":	152,
+								"contrast":	158,
+								"saturation":	190,
 								"hue":	128
 							}
 						},

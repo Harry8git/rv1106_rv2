@@ -391,7 +391,7 @@ clang -O3 \
 
 
 ls /dev/cu.usbmodem* 2>/dev/null
-./fpv_pilot /dev/cu.usbmodem103
+./fpv_pilot /dev/cu.usbmodem2103
 
 
 
@@ -438,5 +438,6 @@ journalctl -u luckfox-vtx -f
 
 
 
-
+    dec->parser = av_parser_init(dec->codec->id);
+    //dec->parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
 
