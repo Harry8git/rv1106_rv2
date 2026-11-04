@@ -43,8 +43,8 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   4
-#define FIFO_SIZE          4
+#define MAX_V4L2_BUFFERS   2
+#define FIFO_SIZE          2
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 #define FFS_EP0_PATH       "/dev/usb-ffs/vtx/ep0"
@@ -163,9 +163,9 @@ static inline int bulk_write_frame(VtxContext *ctx, const uint8_t *hdr, size_t h
     /* 1. Prevent USB transfer merging:
      * If total is an exact multiple of 512, append 1 trailing zero byte
      * (valid H.265 trailing padding) so the transfer ALWAYS ends with a short packet. */
-    if ((total % 512) == 0) {
+    /* if ((total % 512) == 0) {
         s_tx_buf[total++] = 0x00;
-    }
+    } */
 
     /* 2. Guaranteed delivery: poll on EAGAIN so no P-frame is ever dropped */
     size_t written = 0;
@@ -226,7 +226,7 @@ static inline int bulk_write_all(VtxContext *ctx, const uint8_t *buf, size_t len
 /* ----------------------------------------------------------------------------
  * FunctionFS EP0 Event Handler Thread
  * ---------------------------------------------------------------------------- */
-static int open_vtx_endpoint(VtxContext *ctx) {
+/* static int open_vtx_endpoint(VtxContext *ctx) {
     ctx->ep1_fd = open(FFS_EP1_PATH, O_RDWR | O_NONBLOCK);
     if (ctx->ep1_fd < 0) {
         fprintf(stderr, "ERROR: Cannot open '%s': %s (Is luckfox-usb-daemon running?)\n",
@@ -235,7 +235,56 @@ static int open_vtx_endpoint(VtxContext *ctx) {
     }
     fprintf(stderr, ">>> VTX connected to USB Bulk Endpoint <<<\n");
     return 0;
+}*/
+
+
+static int open_vtx_endpoint(VtxContext *ctx) {
+    ctx->ep1_fd = open(FFS_EP1_PATH, O_RDWR | O_NONBLOCK);
+
+    if (ctx->ep1_fd < 0) {
+        fprintf(stderr,
+                "ERROR: Cannot open '%s': %s\n",
+                FFS_EP1_PATH, strerror(errno));
+        return -1;
+    }
+
+    // Ask FunctionFS for the actual endpoint descriptor.
+    struct usb_endpoint_descriptor ep_desc;
+    memset(&ep_desc, 0, sizeof(ep_desc));
+
+    if (ioctl(ctx->ep1_fd, FUNCTIONFS_ENDPOINT_DESC, &ep_desc) == 0) {
+
+        uint16_t max_packet = le16toh(ep_desc.wMaxPacketSize);
+
+        fprintf(stderr,
+                "[USB DIAG] FunctionFS ep1 actual address: 0x%02X\n",
+                ep_desc.bEndpointAddress);
+
+        fprintf(stderr,
+                "[USB DIAG] Transfer type: %u, Max packet: %u\n",
+                ep_desc.bmAttributes & USB_ENDPOINT_XFERTYPE_MASK,
+                max_packet);
+
+        if (ep_desc.bEndpointAddress != 0x85) {
+            fprintf(stderr,
+                    "[USB DIAG] WARNING: RP2350 currently expects 0x85!\n");
+        } else {
+            fprintf(stderr,
+                    "[USB DIAG] Endpoint matches RP2350 expectation.\n");
+        }
+
+    } else {
+        fprintf(stderr,
+                "[USB DIAG] Cannot query endpoint descriptor: %s\n",
+                strerror(errno));
+    }
+
+    fprintf(stderr, ">>> VTX connected to USB Bulk Endpoint <<<\n");
+
+    return 0;
 }
+
+
 
 
 
@@ -528,12 +577,7 @@ static int start_pipeline(VtxContext *ctx) {
         if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) return -1;
     }
 
-    enum v4l2_buf_type type = ctx->buf_type;
-    /* Configure sensor exposure and blanking BEFORE stream start */
-    configure_sensor_exposure();
-
-    if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
-    usleep(100000);
+    //usleep(100000);
 
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
@@ -630,6 +674,13 @@ static int start_pipeline(VtxContext *ctx) {
         fprintf(stderr, ">>> H.265 sync header: %zu bytes <<<\n", ctx->hdr_len);
     }
     mpp_packet_deinit(&hdr_pkt);
+
+    /* Configure sensor exposure BEFORE stream start */
+    configure_sensor_exposure();
+
+    /* Start camera stream IMMEDIATELY before launching capture thread (NO SLEEP!) */
+    enum v4l2_buf_type type = ctx->buf_type;
+    if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
 
     ctx->streaming = true;
     pthread_create(&ctx->tx_thd, NULL, venc_tx_thread, ctx);

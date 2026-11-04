@@ -64,6 +64,7 @@ cat "$DEV" | ffplay -fflags nobuffer -flags low_delay -framedrop -f hevc -i -
 
 
 
+ssh-keygen -R 192.168.1.100
 ssh-keygen -R 192.168.2.100
 
 
@@ -422,7 +423,7 @@ scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/ardupilot/build/luc
 /usr/bin/arduplane --defaults /etc/ardupilot.parm --serial0 tcp:0.0.0.0:5760:wait --serial1 /dev/ttyGS0
 
 scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/apps/ardupilot/libraries/AP_HAL_Linux/hwdef/luckfox/defaults.parm root@192.168.2.100:/etc/ardupilot.parm
-
+scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/meta-luckfox/recipes-multimedia/luckfox-iqfiles/files/imx462_imx462_default.json root@192.168.2.100:/etc/iqfiles/imx462_imx462_default.json
 
 top -d 1 | grep vtx
 
@@ -481,3 +482,7 @@ sed -n '2046,2055p' "$JSON"
 systemctl restart rkaiq_3A_server.service
 sleep 1
 systemctl restart luckfox-vtx.service
+
+cd /Users/hspencer/.pico-sdk/sdk/2.3.1/lib/tinyusb
+tinyusb % grep -E "TUSB_VERSION_(MAJOR|MINOR|REVISION)" src/tusb_option.h
+
