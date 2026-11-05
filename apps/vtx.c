@@ -577,7 +577,7 @@ static int start_pipeline(VtxContext *ctx) {
         if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) return -1;
     }
 
-    //usleep(100000);
+    // usleep(100000);
 
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
@@ -623,7 +623,7 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:scaling_list", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_luma_disable", 1);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:sao_chroma_disable", 1);
-    mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1); 
+    // mpp_enc_cfg_set_s32(ctx->enc_cfg, "base:low_delay", 1); 
 
     /*mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:mode", MPP_ENC_SPLIT_BY_CTU); // Tested, did not improve latency
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "split:arg", 60);
@@ -681,7 +681,7 @@ static int start_pipeline(VtxContext *ctx) {
     /* Start camera stream IMMEDIATELY before launching capture thread (NO SLEEP!) */
     enum v4l2_buf_type type = ctx->buf_type;
     if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) return -1;
-
+    usleep(50000);
     ctx->streaming = true;
     pthread_create(&ctx->tx_thd, NULL, venc_tx_thread, ctx);
     pthread_create(&ctx->cap_thd, NULL, camera_capture_thread, ctx);

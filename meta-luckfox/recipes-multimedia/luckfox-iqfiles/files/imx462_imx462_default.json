@@ -2086,7 +2086,7 @@
                         "wb_v32": {
                             "control": {
                                 "byPass": 0,
-                                "mode": "CALIB_WB_MODE_MANUAL"
+                                "mode": "CALIB_WB_MODE_AUTO"
                             },
                             "manualPara": {
                                 "mode": "CALIB_MWB_MODE_WBGAIN",

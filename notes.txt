@@ -486,3 +486,9 @@ systemctl restart luckfox-vtx.service
 cd /Users/hspencer/.pico-sdk/sdk/2.3.1/lib/tinyusb
 tinyusb % grep -E "TUSB_VERSION_(MAJOR|MINOR|REVISION)" src/tusb_option.h
 
+
+
+
+sed -i 's/"CALIB_WB_MODE_MANUAL"/"CALIB_WB_MODE_AUTO"/' /etc/iqfiles/imx462_imx462_default.json
+
+
