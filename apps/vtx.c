@@ -43,16 +43,13 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   2
-#define FIFO_SIZE          2
+#define MAX_V4L2_BUFFERS   3
+#define FIFO_SIZE          32
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 #define FFS_EP0_PATH       "/dev/usb-ffs/vtx/ep0"
 #define FFS_EP1_PATH       "/dev/usb-ffs/vtx/ep1"
 #define GADGET_UDC_PATH    "/sys/kernel/config/usb_gadget/g1/UDC"
-
-/* 8-byte Framing Header: Magic (4B) + Length (4B, Little-Endian) */
-static const uint8_t VTX_MAGIC[4] = { 0xAA, 0x55, 0x56, 0x31 };
 
 struct ffs_desc_full {
     struct usb_functionfs_descs_head_v2 header;
@@ -302,7 +299,6 @@ static void *camera_capture_thread(void *arg) {
     uint32_t ver_stride = MPP_ALIGN(ctx->cfg.height, 16);
     uint32_t cap_cnt = 0;
     
-    /* Reset sequence counter cleanly every time the thread starts */
     uint32_t last_seq = 0;
     bool first_frame = true;
 
@@ -330,7 +326,6 @@ static void *camera_capture_thread(void *arg) {
             continue;
         }
 
-        /* Detect dropped frames without unsigned integer underflow */
         if (!first_frame) {
             if (buf.sequence > last_seq + 1) {
                 fprintf(stderr, ">>> CAMERA DROP: missed %u frame(s)! (seq %u vs expected %u) <<<\n",
@@ -353,16 +348,16 @@ static void *camera_capture_thread(void *arg) {
         mpp_frame_set_buffer(frame, ctx->buffers[idx].mpp_buf);
         mpp_frame_set_pts(frame, (uint64_t)cap_cnt * 1000000ULL / ctx->cfg.fps);
 
-        /* 1. Register buffer index in FIFO BEFORE submitting to encoder to avoid race conditions */
+        /* Register buffer index into FIFO before submit */
         pthread_mutex_lock(&ctx->fifo_lock);
         ctx->fifo[ctx->fifo_head] = idx;
         ctx->fifo_head = (ctx->fifo_head + 1) % FIFO_SIZE;
         pthread_mutex_unlock(&ctx->fifo_lock);
 
-        /* 2. Submit frame to MPP encoder */
+        /* Submit frame to MPP encoder */
         MPP_RET put_ret = ctx->mpi->encode_put_frame(ctx->mpp_ctx, frame);
         if (put_ret != MPP_OK) {
-            /* If rejected, roll back FIFO and return buffer immediately to camera */
+            /* Roll back FIFO and return buffer immediately to camera if rejected */
             pthread_mutex_lock(&ctx->fifo_lock);
             ctx->fifo_head = (ctx->fifo_head + FIFO_SIZE - 1) % FIFO_SIZE;
             pthread_mutex_unlock(&ctx->fifo_lock);
@@ -429,44 +424,34 @@ static void *venc_tx_thread(void *arg) {
         int frame_complete = partition ? eoi : 1;
         if (frame_complete) {
             pthread_mutex_lock(&ctx->fifo_lock);
-            int return_idx = ctx->fifo[ctx->fifo_tail];
-            ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
-            pthread_mutex_unlock(&ctx->fifo_lock);
+            if (ctx->fifo_head != ctx->fifo_tail) {
+                int return_idx = ctx->fifo[ctx->fifo_tail];
+                ctx->fifo_tail = (ctx->fifo_tail + 1) % FIFO_SIZE;
+                pthread_mutex_unlock(&ctx->fifo_lock);
 
-            struct v4l2_buffer ret_buf;
-            struct v4l2_plane ret_planes[1];
-            memset(&ret_buf, 0, sizeof(ret_buf));
-            memset(ret_planes, 0, sizeof(ret_planes));
+                struct v4l2_buffer ret_buf;
+                struct v4l2_plane ret_planes[1];
+                memset(&ret_buf, 0, sizeof(ret_buf));
+                memset(ret_planes, 0, sizeof(ret_planes));
 
-            ret_buf.type = ctx->buf_type;
-            ret_buf.memory = V4L2_MEMORY_DMABUF;
-            ret_buf.index = return_idx;
+                ret_buf.type = ctx->buf_type;
+                ret_buf.memory = V4L2_MEMORY_DMABUF;
+                ret_buf.index = return_idx;
 
-            if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-                ret_planes[0].m.fd = ctx->buffers[return_idx].dma_fd;
-                ret_planes[0].length = ctx->buffers[return_idx].length;
-                ret_buf.m.planes = ret_planes;
-                ret_buf.length = 1;
+                if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+                    ret_planes[0].m.fd = ctx->buffers[return_idx].dma_fd;
+                    ret_planes[0].length = ctx->buffers[return_idx].length;
+                    ret_buf.m.planes = ret_planes;
+                    ret_buf.length = 1;
+                } else {
+                    ret_buf.m.fd = ctx->buffers[return_idx].dma_fd;
+                    ret_buf.length = ctx->buffers[return_idx].length;
+                }
+
+                xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &ret_buf);
+                frame_cnt++;
             } else {
-                ret_buf.m.fd = ctx->buffers[return_idx].dma_fd;
-                ret_buf.length = ctx->buffers[return_idx].length;
-            }
-
-            xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &ret_buf);
-            frame_cnt++;
-
-            if (frame_cnt % 60 == 0) {
-                clock_gettime(CLOCK_MONOTONIC, &cur_time);
-                double elapsed = (cur_time.tv_sec - last_time.tv_sec) +
-                                 (cur_time.tv_nsec - last_time.tv_nsec) / 1e9;
-                double real_fps = 60.0 / elapsed;
-
-                printf(">>> VTX USB-BULK: %u frames | Real FPS: %.1f | Bitrate: %.1f Kbps <<<\n",
-                       frame_cnt, real_fps, (total_bytes * 8.0 / 1000.0) / elapsed);
-
-                total_bytes = 0;
-                last_time = cur_time;
-                fflush(stdout);
+                pthread_mutex_unlock(&ctx->fifo_lock);
             }
         }
     }
@@ -476,30 +461,25 @@ static void *venc_tx_thread(void *arg) {
 static void configure_sensor_exposure(void) {
     int fd = open("/dev/v4l-subdev2", O_RDWR);
     if (fd < 0) {
-        fprintf(stderr, "Warning: Could not open /dev/v4l-subdev2 to set exposure\n");
+        fprintf(stderr, "Warning: Could not open /dev/v4l-subdev2: %s\n", strerror(errno));
         return;
     }
 
     struct v4l2_control ctrl;
     memset(&ctrl, 0, sizeof(ctrl));
 
-    /* Set short exposure (250 lines ~ 3.7ms) */
-    /* Ensure vertical blanking >= 1000us (90 lines) */
-    ctrl.id = V4L2_CID_VBLANK;
-    ctrl.value = 90;
-    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
-
     ctrl.id = V4L2_CID_EXPOSURE;
     ctrl.value = 250;
-    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+    int ret_exp = ioctl(fd, VIDIOC_S_CTRL, &ctrl);
 
-    /* Set analogue gain to compensate brightness */
-    ctrl.id = V4L2_CID_ANALOGUE_GAIN;
-    ctrl.value = 35;
-    ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+    /* Read back active exposure to verify */
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.id = V4L2_CID_EXPOSURE;
+    int ret_get = ioctl(fd, VIDIOC_G_CTRL, &ctrl);
 
     close(fd);
-    fprintf(stderr, ">>> IMX462 Low-Latency Exposure Applied (exp=250, gain=35) <<<\n");
+    fprintf(stderr, "[sensor-diag] Set exposure ret=%d, readback active exposure=%d (ret=%d)\n",
+            ret_exp, ctrl.value, ret_get);
 }
 
 static int start_pipeline(VtxContext *ctx) {
@@ -577,7 +557,6 @@ static int start_pipeline(VtxContext *ctx) {
         if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) return -1;
     }
 
-    // usleep(100000);
 
     ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
     if (ret != MPP_OK) return -1;
