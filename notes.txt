@@ -387,10 +387,6 @@ clang -O3 \
 
 
 
-/usr/bin/arduplane  --serial0 tcp:0.0.0.0:5760:wait  --log-directory /tmp
-/usr/bin/arduplane   --serial0 /dev/ttyGS0   --serial1 tcp:0.0.0.0:5760:wait
-
-
 ls /dev/cu.usbmodem* 2>/dev/null
 ./fpv_pilot /dev/cu.usbmodem2103
 
@@ -408,9 +404,6 @@ VTX_SLICING=0 /usr/bin/vtx 2>&1 | grep -E "BACKLOG|CAMERA DROP|CDC|VTX:"
 
 fuser /dev/ttyGS0
 
-
-
-/usr/bin/arduplane --serial0 tcp:0.0.0.0:5760:wait --serial1 /dev/ttyGS0
 
 
 ssh root@fe80::1022:1ff:fe66:4901%en10
