@@ -738,7 +738,7 @@ int main(int argc, char **argv) {
     ctx.cfg.width = 1280;
     ctx.cfg.height = 720;
     ctx.cfg.fps = 60;
-    ctx.cfg.bitrate_kbps = 2400;
+    ctx.cfg.bitrate_kbps = 2350;
     ctx.cfg.gop = 65536;
     ctx.cfg.codec_type = MPP_VIDEO_CodingHEVC;
 

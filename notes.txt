@@ -1,5 +1,4 @@
-cd ~/yocto-luckfox
-source poky/oe-init-build-env build
+
 
 bitbake -c cleansstate u-boot-rockchip
 bitbake core-image-minimal
