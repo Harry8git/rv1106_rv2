@@ -7,16 +7,16 @@ SECTION = "multimedia"
 LICENSE = "Apache-2.0 & MIT"
 LIC_FILES_CHKSUM = "file://LICENSES/Apache-2.0;md5=7f43e699e0a26fae98c2938092f008d2 file://LICENSES/MIT;md5=e8f57dd048e186199433be2c41bd3d6d"
 PV = "1.0+git"
-SRCREV = "16e8843f9933196e21a0596328f3ecb0dcd75347"
+SRCREV = "9b56348cc61393c84662e6d6dd78feae67773a36"
 UPSTREAM_CHECK_COMMITS = "1"
 PATCHTOOL = "git"
 
-SRC_URI = "git://github.com/rockchip-linux/mpp;protocol=https;branch=develop \
-           file://0001-mpp_soc-hal-add-rv1106-and-rv1103-encoder-only-SoC-s.patch \
-           file://0004-osal-allocator-dma_heap-force-CMA-heap-no-IOMMU-SoCs.patch \
-           "
+SRC_URI = "git://github.com/rockchip-linux/mpp;protocol=https;branch=develop"
+# BEGIN MPP PATCHES (managed by sync-mpp.sh)
+SRC_URI += "file://0001-mpp_soc-hal-add-RV1103-and-RV1106-encoder-only-SoC-s.patch"
+SRC_URI += "file://0002-osal-allocator-dma_heap-force-CMA-heap-when-there-is.patch"
+# END MPP PATCHES
 inherit pkgconfig cmake
-PATCHTOOL = "git"
 
 HAVE_DRM = "ON"
 HAVE_DRM:rv1106 = "OFF"

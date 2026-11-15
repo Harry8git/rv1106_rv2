@@ -198,7 +198,7 @@ cat "$DEVICE" | ffplay \
 
 
   scp "/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/rockchip-mpp/1.0+git/build/mpp/librockchip_mpp.so."* root@169.254.100.1:/usr/lib/
-
+tar -C "/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/rockchip-mpp/1.0+git/packages-split/rockchip-mpp/usr/lib" -cf - . | ssh root@192.168.1.100 "tar -C /usr/lib -xvf -"
 
 
 
@@ -387,7 +387,8 @@ clang -O3 \
 
 
 ls /dev/cu.usbmodem* 2>/dev/null
-./fpv_pilot /dev/cu.usbmodem2103
+./fpv_pilot /dev/cu.usbmodem103
+./fpv_pilot /dev/cu.usbmodem1234561
 
 
 
