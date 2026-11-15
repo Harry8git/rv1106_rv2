@@ -184,7 +184,8 @@ chosen {
 			csi_dphy_input0: endpoint@0 {
 				reg = <0>;
 				remote-endpoint = <&imx290_out>;
-				data-lanes = <1 2>;
+				/* CHANGE: Update to 4 data lanes */
+				data-lanes = <1 2 3 4>;
 			};
 		};
 
@@ -208,7 +209,7 @@ chosen {
 
 	imx290: imx290@1a {
 		status = "okay";
-		compatible = "sony,imx462", "sony,imx290";           /* MATCHES DRIVER MODEL */
+		compatible = "sony,imx462", "sony,imx290";
 		reg = <0x1a>;
 		clocks = <&out_osc_imx462>;
 		clock-names = "xclk";
@@ -219,15 +220,19 @@ chosen {
 
 		rockchip,camera-module-index = <0>;
 		rockchip,camera-module-facing = "back";
-		rockchip,camera-module-name = "imx462"; /* MATCHES RKAIQ IQ FILE */
+		rockchip,camera-module-name = "imx462";
 		rockchip,camera-module-lens-name = "default";
 		lens-focus = <&cam_ircut0>;
 
 		port {
 			imx290_out: endpoint {
 				remote-endpoint = <&csi_dphy_input0>;
-				data-lanes = <1 2>;
-				link-frequencies = /bits/ 64 <445500000 297000000>; /* 2-LANE 1080P60 LINK FREQ */
+				/* CHANGE: Update to 4 data lanes */
+				data-lanes = <1 2 3 4>;
+
+				/* CHANGE: Update link frequencies for 4 lanes */
+				/* With 4 lanes, data is split across twice as many lanes, halving the required lane frequency */
+				link-frequencies = /bits/ 64 <222750000 148500000>;
 			};
 		};
 	};

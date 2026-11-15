@@ -124,6 +124,8 @@ typedef struct {
     pthread_t       tx_thd;
 
     volatile bool   streaming;
+    volatile bool   paused;
+    volatile bool   request_idr;
 } VtxContext;
 
 static volatile bool quit = false;
@@ -282,7 +284,36 @@ static int open_vtx_endpoint(VtxContext *ctx) {
 }
 
 
+#include <linux/i2c-dev.h>
 
+static int set_sensor_standby(bool standby) {
+    int fd = open("/dev/i2c-4", O_RDWR);
+    if (fd < 0) return -1;
+
+    if (ioctl(fd, I2C_SLAVE_FORCE, 0x1a) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    /* 16-bit register writes: [Addr_MSB, Addr_LSB, Value] */
+    uint8_t xmsta_cmd[3]   = { 0x30, 0x02, standby ? 0x01 : 0x00 };
+    uint8_t standby_cmd[3] = { 0x30, 0x00, standby ? 0x01 : 0x00 };
+
+    if (standby) {
+        /* Stop clock first, then enter standby */
+        write(fd, xmsta_cmd, 3);
+        usleep(10000);
+        write(fd, standby_cmd, 3);
+    } else {
+        /* Exit standby first, then start clock */
+        write(fd, standby_cmd, 3);
+        usleep(30000);
+        write(fd, xmsta_cmd, 3);
+    }
+
+    close(fd);
+    return 0;
+}
 
 
 /* ----------------------------------------------------------------------------
@@ -303,6 +334,13 @@ static void *camera_capture_thread(void *arg) {
     bool first_frame = true;
 
     while (!quit && ctx->streaming) {
+        /* When in standby, sleep without polling the camera */
+        if (ctx->paused) {
+            usleep(20000); /* 20ms */
+            first_frame = true; /* Reset sequence tracking so resume doesn't report frame drops */
+            continue;
+        }
+
         struct pollfd pfd = { .fd = ctx->v4l2_fd, .events = POLLIN };
         int poll_ret = poll(&pfd, 1, 30);
         if (poll_ret <= 0) continue;
@@ -337,6 +375,19 @@ static void *camera_capture_thread(void *arg) {
         last_seq = buf.sequence;
 
         uint32_t idx = buf.index;
+
+        /* If paused, return the buffer to the camera and do NOT pass to encoder */
+        if (ctx->paused) {
+            if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+                planes[0].m.fd = ctx->buffers[idx].dma_fd;
+                planes[0].length = ctx->buffers[idx].length;
+            } else {
+                buf.m.fd = ctx->buffers[idx].dma_fd;
+            }
+            xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf);
+            usleep(15000); /* Sleep 15ms while sensor is off */
+            continue;
+        }
 
         MppFrame frame = NULL;
         mpp_frame_init(&frame);
@@ -409,14 +460,18 @@ static void *venc_tx_thread(void *arg) {
             const uint8_t *send_hdr = NULL;
             size_t send_hdr_len = 0;
 
-            /* Periodic VPS/SPS/PPS injection: atomically bundled with the P-frame */
-            if (ctx->hdr_len > 0 && (frame_cnt == 0 || frame_cnt % 60 == 0)) {
-                send_hdr = ctx->hdr_buf;
-                send_hdr_len = ctx->hdr_len;
-            }
+            /* Only transmit over USB if not paused */
+            if (!ctx->paused) {
+                /* Send headers on frame 0, every 60 frames, or immediately when resuming */
+                if (ctx->hdr_len > 0 && (frame_cnt == 0 || (frame_cnt % 60 == 0) || ctx->request_idr)) {
+                    send_hdr = ctx->hdr_buf;
+                    send_hdr_len = ctx->hdr_len;
+                    ctx->request_idr = false;
+                }
 
-            bulk_write_frame(ctx, send_hdr, send_hdr_len, (const uint8_t *)ptr, len);
-            total_bytes += (send_hdr_len + len + 8);
+                bulk_write_frame(ctx, send_hdr, send_hdr_len, (const uint8_t *)ptr, len);
+                total_bytes += (send_hdr_len + len + 8);
+            }
         }
 
         mpp_packet_deinit(&packet);
@@ -671,15 +726,15 @@ static void stop_pipeline(VtxContext *ctx) {
     if (!ctx->streaming) return;
     ctx->streaming = false;
 
-    /* Instantly wake up worker threads if blocked in write() or poll() */
+    /* 1. Wake up worker threads */
     pthread_kill(ctx->cap_thd, SIGUSR1);
     pthread_kill(ctx->tx_thd, SIGUSR1);
 
-    /* 1. Join threads cleanly */
+    /* 2. Join threads cleanly */
     pthread_join(ctx->cap_thd, NULL);
     pthread_join(ctx->tx_thd, NULL);
 
-    /* 2. Stop camera hardware stream */
+    /* 3. Stop camera hardware stream */
     if (ctx->v4l2_fd >= 0) {
         enum v4l2_buf_type vtype = ctx->buf_type;
         xioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &vtype);
@@ -687,7 +742,7 @@ static void stop_pipeline(VtxContext *ctx) {
         ctx->v4l2_fd = -1;
     }
 
-    /* 3. Destroy MPP encoder before releasing memory buffers */
+    /* 4. Destroy MPP encoder */
     if (ctx->ref_cfg) {
         mpp_enc_ref_cfg_deinit(&ctx->ref_cfg);
         ctx->ref_cfg = NULL;
@@ -701,7 +756,7 @@ static void stop_pipeline(VtxContext *ctx) {
         ctx->mpp_ctx = NULL;
     }
 
-    /* 4. Safely release camera buffers and reset pointers */
+    /* 5. Safely release camera buffers */
     for (uint32_t i = 0; i < ctx->buf_count; ++i) {
         if (ctx->buffers[i].mpp_buf) {
             mpp_buffer_put(ctx->buffers[i].mpp_buf);
@@ -713,7 +768,10 @@ static void stop_pipeline(VtxContext *ctx) {
         ctx->buf_group = NULL;
     }
 
-    /* Reset FIFO indices */
+    /* 6. Put sensor in standby on exit */
+    set_sensor_standby(true);
+
+    /* Reset FIFO */
     pthread_mutex_lock(&ctx->fifo_lock);
     ctx->fifo_head = 0;
     ctx->fifo_tail = 0;
@@ -764,11 +822,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Warning: Could not open '%s': %s\n", adc_path, strerror(errno));
     }
 
-    if (ctx.cfg.autostart) {
-        fprintf(stderr, ">>> Autostart enabled: starting VTX pipeline immediately <<<\n");
-        start_pipeline(&ctx);
-    } else {
-        fprintf(stderr, ">>> VTX in standby (0%% CPU). Press Button or [ENTER] in SSH to start/stop <<<\n");
+    fprintf(stderr, ">>> Starting VTX camera and encoder pipeline <<<\n");
+    if (start_pipeline(&ctx) < 0) {
+        fprintf(stderr, "Fatal: start_pipeline failed!\n");
+        return 1;
     }
 
     int stdin_has_tty = isatty(STDIN_FILENO);
@@ -812,12 +869,18 @@ int main(int argc, char **argv) {
         }
 
         if (toggle) {
-            if (ctx.streaming) {
-                fprintf(stderr, ">>> Trigger: Stopping VTX <<<\n");
-                stop_pipeline(&ctx);
+            ctx.paused = !ctx.paused;
+            if (ctx.paused) {
+                fprintf(stderr, ">>> VTX PAUSED: Sensor entering low-power standby <<<\n");
+                set_sensor_standby(true);
             } else {
-                fprintf(stderr, ">>> Trigger: Starting VTX <<<\n");
-                start_pipeline(&ctx);
+                fprintf(stderr, ">>> VTX RESUMED: Sensor waking up & requesting IDR keyframe <<<\n");
+                set_sensor_standby(false);
+                usleep(30000); /* Give sensor 30ms to stabilize MIPI clock before requesting frames */
+                ctx.request_idr = true;
+                if (ctx.mpp_ctx && ctx.mpi) {
+                    ctx.mpi->control(ctx.mpp_ctx, MPP_ENC_SET_IDR_FRAME, NULL);
+                }
             }
         }
     }

@@ -166,7 +166,8 @@ static inline struct imx290 *to_imx290(struct v4l2_subdev *_sd) {
 	return container_of(_sd, struct imx290, sd);
 }
 
-static const s64 link_freq_2lanes[] = { 445500000 };
+//static const s64 link_freq_2lanes[] = { 445500000 };
+static const s64 link_freq_4lanes[] = { 222750000 };
 
 static int imx290_write(struct imx290 *imx290, u32 addr, u32 value, int *err)
 {
@@ -219,12 +220,7 @@ static int imx290_start_streaming(struct imx290 *imx290)
 	imx290_write(imx290, IMX290_INCKSEL5, 0x1a, &ret);
 	imx290_write(imx290, IMX290_INCKSEL6, 0x1a, &ret);
 
-	/* IMX462 is wired as a 2-lane sensor on this board (see the DT
-	 * data-lanes = <1 2> setting). Keeping the sensor and CSI PHY in
-	 * 1-lane mode produces unstable/garbled Bayer data and the green
-	 * block corruption seen in the processed image.
-	 */
-	imx290_write(imx290, IMX290_PHY_LANE_NUM, 1, &ret);
+	/* imx290_write(imx290, IMX290_PHY_LANE_NUM, 1, &ret);
 	imx290_write(imx290, IMX290_CSI_LANE_MODE, 1, &ret);
 	imx290_write(imx290, IMX290_FR_FDG_SEL, 0x01, &ret);
 	imx290_write(imx290, IMX290_CTRL_07, 0x00, &ret);
@@ -238,8 +234,27 @@ static int imx290_start_streaming(struct imx290 *imx290)
 	imx290_write(imx290, IMX290_TCLKZERO, 255, &ret);
 	imx290_write(imx290, IMX290_TCLKPREPARE, 63, &ret);
 	imx290_write(imx290, IMX290_TLPX, 55, &ret);
-	imx290_write(imx290, IMX290_PGCTRL, 0x00, &ret);
+	imx290_write(imx290, IMX290_PGCTRL, 0x00, &ret);*/
 
+	/* --- NEW 4-LANE CONFIGURATION --- */
+	/* Set 4-lane mode (lanes - 1 = 3) */
+	imx290_write(imx290, IMX290_PHY_LANE_NUM, 0x03, &ret);
+	imx290_write(imx290, IMX290_CSI_LANE_MODE, 0x03, &ret);
+	imx290_write(imx290, IMX290_FR_FDG_SEL, 0x01, &ret);
+	imx290_write(imx290, IMX290_CTRL_07, 0x00, &ret);
+
+	/* Sony D-PHY timing specifications for 222.75 MHz (445.5 Mbps/lane) */
+	imx290_write(imx290, IMX290_REPETITION, 0x10, &ret);
+	imx290_write(imx290, IMX290_TCLKPOST, 87, &ret);
+	imx290_write(imx290, IMX290_THSZERO, 55, &ret);
+	imx290_write(imx290, IMX290_THSPREPARE, 31, &ret);
+	imx290_write(imx290, IMX290_TCLKTRAIL, 31, &ret);
+	imx290_write(imx290, IMX290_THSTRAIL, 31, &ret);
+	imx290_write(imx290, IMX290_TCLKZERO, 119, &ret);
+	imx290_write(imx290, IMX290_TCLKPREPARE, 31, &ret);
+	imx290_write(imx290, IMX290_TLPX, 23, &ret);
+	imx290_write(imx290, IMX290_PGCTRL, 0x00, &ret);
+	
 	__v4l2_ctrl_handler_setup(imx290->sd.ctrl_handler);
 
 	imx290_write(imx290, IMX290_STANDBY, 0x00, &ret);
@@ -333,7 +348,7 @@ static int imx290_get_selection(struct v4l2_subdev *sd, struct v4l2_subdev_state
 static int imx290_get_mbus_config(struct v4l2_subdev *sd, unsigned int pad, struct v4l2_mbus_config *config)
 {
 	config->type = V4L2_MBUS_CSI2_DPHY;
-	config->bus.mipi_csi2.num_data_lanes = 2;
+	config->bus.mipi_csi2.num_data_lanes = 4; // Lane number
 	return 0;
 }
 
@@ -474,7 +489,7 @@ static int imx290_probe(struct i2c_client *client)
 	imx290->exposure = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_EXPOSURE, 1, 1123, 1, 1000);
 	imx290->vblank = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_VBLANK, 45, 0x3ffff - 1080, 1, 90);
 	imx290->hblank = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_HBLANK, 280, 0xffff - 1920, 1, 280);
-	imx290->link_freq = v4l2_ctrl_new_int_menu(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_LINK_FREQ, 0, 0, link_freq_2lanes);
+	imx290->link_freq = v4l2_ctrl_new_int_menu(&imx290->ctrls, &imx290_ctrl_ops, V4L2_CID_LINK_FREQ, 0, 0, link_freq_4lanes);
 	if (imx290->link_freq) imx290->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	sd->ctrl_handler = &imx290->ctrls;
