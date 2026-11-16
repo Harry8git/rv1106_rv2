@@ -8,6 +8,7 @@ inherit module update-rc.d
 PV = "1.0+git${SRCPV}"
 
 SRC_URI = "git://github.com/LYU4662/aic8800-sdio-linux-1.0.git;protocol=https;branch=master \
+           file://0001-aic8800dc-fix-cfg80211-api-for-linux-6.12.patch \
            file://Makefile \
            file://aic8800_bsp-Kbuild \
            file://aic8800_fdrv-Kbuild \

@@ -1,0 +1,41 @@
+From f7ee42a16a6241f46b7248f7ba223547e1e2c629 Mon Sep 17 00:00:00 2001
+From: Harry Spencer <harry8@gmail.com>
+Date: Sun, 15 Nov 2026 13:00:27 -0800
+Subject: [PATCH] video: rockchip: mpp: reject non-contiguous buffers on
+ no-iommu devices
+
+Upstream-Status: Pending
+---
+ drivers/video/rockchip/mpp/mpp_iommu.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/video/rockchip/mpp/mpp_iommu.c b/drivers/video/rockchip/mpp/mpp_iommu.c
+index c24d3810e..fe0fda6db 100644
+--- a/drivers/video/rockchip/mpp/mpp_iommu.c
++++ b/drivers/video/rockchip/mpp/mpp_iommu.c
+@@ -253,6 +253,22 @@ struct mpp_dma_buffer *mpp_dma_import_fd(struct mpp_iommu_info *iommu_info,
+ 		mpp_err("dma_buf_map_attachment_unlocked fd %d failed(%d)\n", fd, ret);
+ 		goto fail_map;
+ 	}
++	/*
++	 * On a device with no IOMMU only the first scatter-gather segment
++	 * address is programmed into the hardware, so a buffer that is not a
++	 * single physically contiguous run would make the codec DMA overrun
++	 * into unrelated/unmapped DRAM.  Reject it here with a clear message
++	 * instead of silently corrupting memory (userspace must allocate such
++	 * buffers from the CMA dma-heap).
++	 */
++	if (!iommu_info && sg_dma_len(sgt->sgl) < dmabuf->size) {
++		dev_err(dma->dev,
++			"fd %d: non-contiguous buffer on no-iommu device (first segment %u < size %zu); allocate from the CMA dma-heap\n",
++			fd, sg_dma_len(sgt->sgl), dmabuf->size);
++		ret = -EINVAL;
++		dma_buf_unmap_attachment_unlocked(attach, sgt, buffer->dir);
++		goto fail_map;
++	}
+ 	buffer->iova = sg_dma_address(sgt->sgl);
+ 	buffer->size = sg_dma_len(sgt->sgl);
+ 	buffer->attach = attach;
+-- 
+2.43.0
+

@@ -13,7 +13,13 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/rk-camera-module.h>
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+#include <linux/unaligned.h>
+#else
 #include <asm/unaligned.h>
+#endif
 
 #include <media/media-entity.h>
 #include <media/v4l2-ctrls.h>
@@ -352,7 +358,7 @@ static int imx290_get_mbus_config(struct v4l2_subdev *sd, unsigned int pad, stru
 	return 0;
 }
 
-static int imx290_g_frame_interval(struct v4l2_subdev *sd, struct v4l2_subdev_frame_interval *fi)
+static int imx290_get_frame_interval(struct v4l2_subdev *sd, struct v4l2_subdev_state *sd_state, struct v4l2_subdev_frame_interval *fi)
 {
 	fi->interval.numerator = 10000;
 	fi->interval.denominator = 600000; /* 60 FPS */
@@ -385,7 +391,6 @@ static const struct v4l2_subdev_core_ops imx290_core_ops = {
 
 static const struct v4l2_subdev_video_ops imx290_video_ops = {
 	.s_stream = imx290_set_stream,
-	.g_frame_interval = imx290_g_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops imx290_pad_ops = {
@@ -393,6 +398,7 @@ static const struct v4l2_subdev_pad_ops imx290_pad_ops = {
 	.set_fmt = imx290_get_fmt,
 	.get_selection = imx290_get_selection,
 	.get_mbus_config = imx290_get_mbus_config,
+	.get_frame_interval = imx290_get_frame_interval,
 };
 
 static const struct v4l2_subdev_ops imx290_subdev_ops = {

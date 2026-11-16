@@ -31,6 +31,7 @@ ccflags-y += -DCONFIG_VENDOR_RWNX_VHT_NO80
 ccflags-y += -Wno-implicit-fallthrough
 ccflags-y += -Wno-unused-function
 ccflags-y += -Wno-unused-variable
+ccflags-y += -Wno-missing-prototypes
 
 # Regular Makefile part (when called from command line)
 else

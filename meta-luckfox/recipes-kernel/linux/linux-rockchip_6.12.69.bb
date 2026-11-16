@@ -1,0 +1,72 @@
+SUMMARY = "Rockchip vendor Linux kernel (develop-6.12 branch)"
+SECTION = "kernel"
+LICENSE = "GPL-2.0-with-Linux-syscall-note"
+LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
+
+inherit kernel kernel-yocto
+
+DEPENDS += "lz4-native xz-native bc-native openssl-native util-linux-native gmp-native libmpc-native"
+DEPENDS += "u-boot-tools-native"
+
+LINUX_VERSION = "6.12.69"
+LINUX_VERSION_EXTENSION = "-rockchip"
+
+KBRANCH = "develop-6.12"
+SRCREV = "470f9dccbdc42e7b8a824d0a5c5640a10e9457d2"
+
+KCONFIG_MODE = "alldefconfig"
+
+SRC_URI = "git://github.com/rockchip-linux/kernel.git;protocol=https;branch=${KBRANCH} \
+           file://dts \
+           file://configs \
+           file://0001-mm-pgtable-export-__pte_offset_map_lock-for-out-of-t.patch \
+           file://0002-video-rockchip-mpp-rkvenc2-add-rv1106-VEPU-540C-supp.patch \
+           file://0003-mpp-iommu-reject-non-contiguous-buffers-on-no-iommu.patch \
+           file://0004-rknpu-fix-arm32-cache-flush-and-format-specifier.patch \
+           file://0005-rga2-fix-get-user-pages-remote.patch \
+           file://enable-efi-partition.cfg \
+           file://enable-camera-subsystem.cfg \
+           file://enable-stmmac-ethtool.cfg \
+           file://enable-usb-gadget.cfg \
+           file://custom-features.cfg \
+           file://imx290.c \
+           "
+
+EXTRA_OEMAKE:append = " KCFLAGS='-Wno-implicit-function-declaration -Wno-error -Wno-format -Wno-incompatible-pointer-types'"
+
+RK_KERNEL_DTS_BASE ?= ""
+
+do_kernel_metadata:prepend() {
+    for f in "${UNPACKDIR}/configs/"*_defconfig; do
+        [ -e "$f" ] && cp "$f" "${S}/arch/${ARCH}/configs/"
+    done
+
+    for f in "${UNPACKDIR}/dts/"*.dts "${UNPACKDIR}/dts/"*.dtsi; do
+        [ -e "$f" ] && cp "$f" "${S}/arch/arm/boot/dts/rockchip/"
+    done
+
+    for src in "${UNPACKDIR}/imx290.c" "${WORKDIR}/imx290.c"; do
+        [ -f "$src" ] && cp -f "$src" "${S}/drivers/media/i2c/imx290.c"
+    done
+}
+
+do_configure:prepend() {
+    for src in "${UNPACKDIR}/imx290.c" "${WORKDIR}/imx290.c"; do
+        [ -f "$src" ] && cp -f "$src" "${S}/drivers/media/i2c/imx290.c"
+    done
+}
+
+do_compile:append() {
+    if [ -n "${RK_KERNEL_DTS_BASE}" ] && [ -f "${S}/boot.its" ]; then
+        sed -i '1s|^#!/usr/bin/env python$|#!/usr/bin/env python3|' \
+            "${S}/scripts/bmpconvert" || true
+        oe_runmake BOOT_ITS="${S}/boot.its" MKIMAGE="mkimage" \
+            "${RK_KERNEL_DTS_BASE}.img"
+    fi
+}
+
+do_deploy:append() {
+    if [ -f "${B}/boot.img" ]; then
+        install -m 0644 "${B}/boot.img" "${DEPLOYDIR}/boot.img"
+    fi
+}
