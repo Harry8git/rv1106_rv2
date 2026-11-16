@@ -15,6 +15,7 @@ PROVIDES += "virtual/bootloader"
 SRC_URI = " \
     git://github.com/rockchip-linux/u-boot.git;protocol=https;branch=next-dev;name=uboot \
     git://github.com/rockchip-linux/rkbin.git;protocol=https;branch=master;name=rkbin;destsuffix=rkbin \
+    file://0003-rv1106-fix-kernel-fdt-load-addresses.patch \
 "
 
 SRCREV_uboot  = "aeec6f2bfd5ce0cfcdfe0ffc7f84d9d143683856"
