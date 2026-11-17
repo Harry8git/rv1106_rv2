@@ -145,7 +145,7 @@ static int xioctl(int fh, int request, void *arg) {
 
 
 static uint8_t s_tx_buf[256 * 1024];
-
+#if 0
 static inline int bulk_write_frame(VtxContext *ctx, const uint8_t *hdr, size_t hdr_len,
                                    const uint8_t *slice, size_t slice_len) {
     if (!ctx || ctx->ep1_fd < 0 || !slice || slice_len == 0) return 0;
@@ -188,53 +188,104 @@ static inline int bulk_write_frame(VtxContext *ctx, const uint8_t *hdr, size_t h
     }
     return (int)written;
 }
+#endif
 
 
-/* ----------------------------------------------------------------------------
- * USB Bulk Writer (Clean exit on stop signals without hanging)
- * ---------------------------------------------------------------------------- */
-static inline int bulk_write_all(VtxContext *ctx, const uint8_t *buf, size_t len) {
-    if (!ctx || ctx->ep1_fd < 0 || !buf || len == 0) return 0;
+static inline int bulk_write_frame(VtxContext *ctx,
+                                   const uint8_t *hdr, size_t hdr_len,
+                                   const uint8_t *slice, size_t slice_len)
+{
+    if (!ctx || ctx->ep1_fd < 0 || !slice || slice_len == 0)
+        return 0;
 
-    size_t total_written = 0;
-    while (total_written < len && !quit && ctx->streaming) {
-        ssize_t n = write(ctx->ep1_fd, buf + total_written, len - total_written);
+    size_t total = hdr_len + slice_len;
+
+    if (total > sizeof(s_tx_buf) - 2)
+        return -1;
+
+    if (hdr && hdr_len > 0)
+        memcpy(s_tx_buf, hdr, hdr_len);
+
+    memcpy(s_tx_buf + hdr_len, slice, slice_len);
+
+    if ((total % 64) == 0)
+        s_tx_buf[total++] = 0x00;
+
+    size_t written = 0;
+    unsigned int false_ready_count = 0;
+
+    while (written < total && !quit && ctx->streaming) {
+        ssize_t n = write(ctx->ep1_fd,
+                          s_tx_buf + written,
+                          total - written);
+
         if (n > 0) {
-            total_written += (size_t)n;
-        } else if (n < 0) {
-            if (errno == EINTR) {
-                if (quit || !ctx->streaming) return -1;
-                continue;
-            }
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /* Allow up to 100ms for host USB scheduling jitter */
-                struct pollfd pfd = { .fd = ctx->ep1_fd, .events = POLLOUT };
-                int pr = poll(&pfd, 1, 100);
-                if (pr <= 0) {
-                    fprintf(stderr, "USB write timeout! Dropped %zu bytes\n", len - total_written);
-                    return -1;
-                }
-                continue;
-            }
+            written += (size_t)n;
+            false_ready_count = 0;
+            continue;
+        }
+
+        if (n == 0) {
+            errno = EIO;
             return -1;
         }
+
+        if (errno == EINTR)
+            continue;
+
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+            return -1;
+
+        struct pollfd pfd = {
+            .fd = ctx->ep1_fd,
+            .events = POLLOUT,
+            .revents = 0
+        };
+
+        int pr;
+
+        do {
+            pfd.revents = 0;
+            pr = poll(&pfd, 1, 100);
+        } while (pr < 0 && errno == EINTR &&
+                 !quit && ctx->streaming);
+
+        if (pr == 0) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+
+        if (pr < 0)
+            return -1;
+
+        /* Endpoint disconnected, disabled or invalid. */
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            errno = ESHUTDOWN;
+            return -1;
+        }
+
+        /* Do not treat arbitrary poll events as writable. */
+        if (!(pfd.revents & POLLOUT)) {
+            errno = EIO;
+            return -1;
+        }
+
+        /*
+         * POLLOUT was reported, but write() still returned EAGAIN.
+         * Bound repeated false-ready events to prevent CPU spinning.
+         */
+        if (++false_ready_count >= 5) {
+            errno = EAGAIN;
+            return -1;
+        }
+
+        usleep(1000);
     }
-    return (int)total_written;
+
+    return (int)written;
 }
 
-/* ----------------------------------------------------------------------------
- * FunctionFS EP0 Event Handler Thread
- * ---------------------------------------------------------------------------- */
-/* static int open_vtx_endpoint(VtxContext *ctx) {
-    ctx->ep1_fd = open(FFS_EP1_PATH, O_RDWR | O_NONBLOCK);
-    if (ctx->ep1_fd < 0) {
-        fprintf(stderr, "ERROR: Cannot open '%s': %s (Is luckfox-usb-daemon running?)\n",
-                FFS_EP1_PATH, strerror(errno));
-        return -1;
-    }
-    fprintf(stderr, ">>> VTX connected to USB Bulk Endpoint <<<\n");
-    return 0;
-}*/
+
 
 
 static int open_vtx_endpoint(VtxContext *ctx) {
