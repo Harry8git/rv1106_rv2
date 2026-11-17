@@ -30,6 +30,7 @@ SRC_URI = "git://github.com/rockchip-linux/kernel.git;protocol=https;branch=${KB
            file://enable-stmmac-ethtool.cfg \
            file://enable-usb-gadget.cfg \
            file://custom-features.cfg \
+           file://trim-kernel.cfg \
            file://imx290.c \
            "
 
