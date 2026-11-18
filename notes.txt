@@ -44,7 +44,7 @@ bitbake core-image-minimal
 
 ls /dev/tty.* | grep -iE "usb|modem"
 
-ssh root@169.254.100.1
+ssh root@192.168.1.100
 
 
 

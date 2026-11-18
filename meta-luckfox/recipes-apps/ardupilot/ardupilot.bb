@@ -3,7 +3,7 @@ HOMEPAGE = "https://github.com/Harry8git/Ardupilot-rv1106"
 LICENSE = "GPL-3.0-only"
 LIC_FILES_CHKSUM = "file://COPYING.txt;md5=d32239bcb673463ab874e80d47fae504"
 
-inherit externalsrc
+inherit externalsrc systemd
 
 EXTERNALSRC = "${TOPDIR}/../apps/ardupilot"
 EXTERNALSRC_BUILD = "${EXTERNALSRC}"
@@ -12,6 +12,9 @@ DEPENDS += "python3-native"
 
 ARDUPILOT_BOARD = "luckfox"
 ARDUPILOT_VEHICLE = "plane"
+
+SYSTEMD_SERVICE:${PN} = "ardupilot.service"
+SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
 do_configure() {
     cd ${S}
@@ -29,8 +32,15 @@ do_install() {
 
     install -d ${D}${sysconfdir}
     install -m 0644 ${S}/libraries/AP_HAL_Linux/hwdef/${ARDUPILOT_BOARD}/defaults.parm ${D}${sysconfdir}/ardupilot.parm
+
+    install -d ${D}${systemd_system_unitdir}
+    install -m 0644 ${THISDIR}/files/ardupilot.service ${D}${systemd_system_unitdir}/ardupilot.service
 }
 
-FILES:${PN} += "${bindir}/ardu${ARDUPILOT_VEHICLE} ${sysconfdir}/ardupilot.parm"
+FILES:${PN} += " \
+    ${bindir}/ardu${ARDUPILOT_VEHICLE} \
+    ${sysconfdir}/ardupilot.parm \
+    ${systemd_system_unitdir}/ardupilot.service \
+"
 
 do_buildclean[noexec] = "1"
