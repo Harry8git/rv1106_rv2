@@ -223,8 +223,7 @@ static inline int bulk_write_frame(VtxContext *ctx,
     if (!ctx || ctx->ep1_fd < 0 || !slice || slice_len == 0)
         return 0;
 
-    static const uint8_t hevc_aud[7] = { 0x00, 0x00, 0x00, 0x01, 0x46, 0x01, 0x50 };
-    size_t total = hdr_len + slice_len + sizeof(hevc_aud);
+    size_t total = hdr_len + slice_len;
     if (total > USB_TX_BUF_SIZE - 2)
         return -1;
 
@@ -254,15 +253,12 @@ static inline int bulk_write_frame(VtxContext *ctx,
         }
     }
 
-    /* 3. Stage packet into slot buffer and enforce short-packet termination */
+    /* 3. Stage packet into slot buffer */
     uint8_t *dst = s_usb_aio.buf[slot];
     if (hdr && hdr_len > 0)
         memcpy(dst, hdr, hdr_len);
     memcpy(dst + hdr_len, slice, slice_len);
-    memcpy(dst + hdr_len + slice_len, hevc_aud, sizeof(hevc_aud));
 
-    //if ((total % 64) == 0)
-    //    dst[total++] = 0x00;
 
     /* 4. Queue asynchronously to FunctionFS UDC DMA */
     struct iocb *cb = &s_usb_aio.iocbs[slot];
