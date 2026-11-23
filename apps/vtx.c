@@ -42,7 +42,7 @@
 #include <rockchip/rk_mpp_cfg.h>
 #include <rockchip/rk_venc_ref.h>
 
-#define MAX_V4L2_BUFFERS   3
+#define MAX_V4L2_BUFFERS   2
 #define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
 
 #define FFS_EP1_PATH       "/dev/usb-ffs/vtx/ep1"
@@ -282,8 +282,6 @@ static inline int bulk_write_frame(VtxContext *ctx,
     return (int)total;
 }
 
-
-
 static int open_vtx_endpoint(VtxContext *ctx) {
     ctx->ep1_fd = open(FFS_EP1_PATH, O_RDWR | O_NONBLOCK);
     if (ctx->ep1_fd < 0) {
@@ -316,7 +314,6 @@ static int open_vtx_endpoint(VtxContext *ctx) {
     return 0;
 }
 
-
 static void configure_sensor_exposure(void) {
     int fd = open("/dev/v4l-subdev2", O_RDWR);
     if (fd < 0) {
@@ -324,11 +321,7 @@ static void configure_sensor_exposure(void) {
         return;
     }
 
-    struct v4l2_control ctrl;
-    memset(&ctrl, 0, sizeof(ctrl));
-
-    ctrl.id = V4L2_CID_EXPOSURE;
-    ctrl.value = 250;
+    struct v4l2_control ctrl = { .id = V4L2_CID_EXPOSURE, .value = 250 };
     int ret_exp = ioctl(fd, VIDIOC_S_CTRL, &ctrl);
 
     memset(&ctrl, 0, sizeof(ctrl));
@@ -339,7 +332,6 @@ static void configure_sensor_exposure(void) {
     fprintf(stderr, "[sensor-diag] Set exposure ret=%d, readback active exposure=%d (ret=%d)\n",
             ret_exp, ctrl.value, ret_get);
 }
-
 
 /* ----------------------------------------------------------------------------
  * SINGLE STREAMING THREAD: Capture -> Encode -> Requeue -> Async USB Bulk TX
@@ -560,7 +552,42 @@ static void *vtx_stream_thread(void *arg) {
     return NULL;
 }
 
+static void cleanup_pipeline(VtxContext *ctx) {
+    if (ctx->v4l2_fd >= 0) {
+        enum v4l2_buf_type vtype = ctx->buf_type;
+        xioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &vtype);
+        close(ctx->v4l2_fd);
+        ctx->v4l2_fd = -1;
+    }
 
+    if (ctx->ref_cfg) {
+        mpp_enc_ref_cfg_deinit(&ctx->ref_cfg);
+        ctx->ref_cfg = NULL;
+    }
+    if (ctx->enc_cfg) {
+        mpp_enc_cfg_deinit(ctx->enc_cfg);
+        ctx->enc_cfg = NULL;
+    }
+    if (ctx->mpp_ctx) {
+        mpp_destroy(ctx->mpp_ctx);
+        ctx->mpp_ctx = NULL;
+    }
+
+    for (uint32_t i = 0; i < ctx->buf_count; ++i) {
+        if (ctx->buffers[i].mpp_frame) {
+            mpp_frame_deinit(&ctx->buffers[i].mpp_frame);
+            ctx->buffers[i].mpp_frame = NULL;
+        }
+        if (ctx->buffers[i].mpp_buf) {
+            mpp_buffer_put(ctx->buffers[i].mpp_buf);
+            ctx->buffers[i].mpp_buf = NULL;
+        }
+    }
+    if (ctx->buf_group) {
+        mpp_buffer_group_put(ctx->buf_group);
+        ctx->buf_group = NULL;
+    }
+}
 
 static int start_pipeline(VtxContext *ctx) {
     ctx->v4l2_fd = open(ctx->cfg.v4l2_dev, O_RDWR | O_NONBLOCK, 0);
@@ -673,7 +700,11 @@ static int start_pipeline(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:gop", ctx->cfg.gop);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:max_reenc_times", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:stats_time", 1);
+    // mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:qp_init", 26);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:qp_min", 18);
+    // mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:qp_max", 48);
+    // mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:qp_min_i", 20);
+    // mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:qp_max_i", 45);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:drop_mode", MPP_ENC_RC_DROP_FRM_DISABLED);
     mpp_enc_cfg_set_u32(ctx->enc_cfg, "rc:super_mode", MPP_ENC_RC_SUPER_FRM_NONE);
 
@@ -743,42 +774,12 @@ static int start_pipeline(VtxContext *ctx) {
     atomic_store(&ctx->streaming, true);
     if (pthread_create(&ctx->stream_thd, NULL, vtx_stream_thread, ctx) != 0) {
         atomic_store(&ctx->streaming, false);
-        xioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &type);
         goto fail;
     }
     return 0;
 
 fail:
-    if (ctx->v4l2_fd >= 0) {
-        close(ctx->v4l2_fd);
-        ctx->v4l2_fd = -1;
-    }
-    if (ctx->ref_cfg) {
-        mpp_enc_ref_cfg_deinit(&ctx->ref_cfg);
-        ctx->ref_cfg = NULL;
-    }
-    if (ctx->enc_cfg) {
-        mpp_enc_cfg_deinit(ctx->enc_cfg);
-        ctx->enc_cfg = NULL;
-    }
-    if (ctx->mpp_ctx) {
-        mpp_destroy(ctx->mpp_ctx);
-        ctx->mpp_ctx = NULL;
-    }
-    for (uint32_t i = 0; i < ctx->buf_count; ++i) {
-        if (ctx->buffers[i].mpp_frame) {
-            mpp_frame_deinit(&ctx->buffers[i].mpp_frame);
-            ctx->buffers[i].mpp_frame = NULL;
-        }
-        if (ctx->buffers[i].mpp_buf) {
-            mpp_buffer_put(ctx->buffers[i].mpp_buf);
-            ctx->buffers[i].mpp_buf = NULL;
-        }
-    }
-    if (ctx->buf_group) {
-        mpp_buffer_group_put(ctx->buf_group);
-        ctx->buf_group = NULL;
-    }
+    cleanup_pipeline(ctx);
     return -1;
 }
 
@@ -790,41 +791,7 @@ static void stop_pipeline(VtxContext *ctx) {
     wake_stream_thread(ctx);
 
     pthread_join(ctx->stream_thd, NULL);
-
-    if (ctx->v4l2_fd >= 0) {
-        enum v4l2_buf_type vtype = ctx->buf_type;
-        xioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &vtype);
-        close(ctx->v4l2_fd);
-        ctx->v4l2_fd = -1;
-    }
-
-    if (ctx->ref_cfg) {
-        mpp_enc_ref_cfg_deinit(&ctx->ref_cfg);
-        ctx->ref_cfg = NULL;
-    }
-    if (ctx->enc_cfg) {
-        mpp_enc_cfg_deinit(ctx->enc_cfg);
-        ctx->enc_cfg = NULL;
-    }
-    if (ctx->mpp_ctx) {
-        mpp_destroy(ctx->mpp_ctx);
-        ctx->mpp_ctx = NULL;
-    }
-
-    for (uint32_t i = 0; i < ctx->buf_count; ++i) {
-        if (ctx->buffers[i].mpp_frame) {
-            mpp_frame_deinit(&ctx->buffers[i].mpp_frame);
-            ctx->buffers[i].mpp_frame = NULL;
-        }
-        if (ctx->buffers[i].mpp_buf) {
-            mpp_buffer_put(ctx->buffers[i].mpp_buf);
-            ctx->buffers[i].mpp_buf = NULL;
-        }
-    }
-    if (ctx->buf_group) {
-        mpp_buffer_group_put(ctx->buf_group);
-        ctx->buf_group = NULL;
-    }
+    cleanup_pipeline(ctx);
 }
 
 int main(void) {
@@ -852,7 +819,7 @@ int main(void) {
     }
     g_wake_efd = ctx.wake_efd;
 
-    strncpy(ctx.cfg.v4l2_dev, "/dev/video11", sizeof(ctx.cfg.v4l2_dev) - 1);
+    strncpy(ctx.cfg.v4l2_dev, "/dev/video12", sizeof(ctx.cfg.v4l2_dev) - 1);
     ctx.cfg.width = 1280;
     ctx.cfg.height = 720;
     ctx.cfg.fps = 60;
@@ -877,7 +844,15 @@ int main(void) {
     }
 
     fprintf(stderr, ">>> Starting VTX camera and encoder pipeline <<<\n");
-    if (start_pipeline(&ctx) < 0) {
+    // Elevate temporarily so spawned mpp_h265e thread inherits SCHED_FIFO 80
+    struct sched_param rt_sp = { .sched_priority = 80 };
+    struct sched_param normal_sp = { .sched_priority = 0 };
+    if (sched_setscheduler(0, SCHED_FIFO, &rt_sp) < 0) {
+        fprintf(stderr, "Warning: main SCHED_FIFO failed: %s\n", strerror(errno));
+    }
+    int pipe_ret = start_pipeline(&ctx);
+    sched_setscheduler(0, SCHED_OTHER, &normal_sp);
+    if (pipe_ret < 0) {
         fprintf(stderr, "Fatal: start_pipeline failed!\n");
         if (adc_fd >= 0) close(adc_fd);
         close(ctx.ep1_fd);
