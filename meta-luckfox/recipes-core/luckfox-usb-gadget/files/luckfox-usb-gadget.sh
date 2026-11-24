@@ -13,7 +13,7 @@ fi
 echo 0x2207 > idVendor
 echo 0x0011 > idProduct
 
-# Composite Device Class with IAD (macOS NCM + ACM + Vendor)
+# Composite Device Class with IAD (macOS NCM + Vendor VTX + Vendor CRSF)
 echo 0xEF > bDeviceClass
 echo 0x02 > bDeviceSubClass
 echo 0x01 > bDeviceProtocol
@@ -33,22 +33,24 @@ HOST_MAC="12:22:$(echo $HASH | cut -c1-2):$(echo $HASH | cut -c3-4):$(echo $HASH
 echo "$DEV_MAC" > functions/ncm.usb0/dev_addr
 echo "$HOST_MAC" > functions/ncm.usb0/host_addr
 
-# 2. CDC-ACM (Serial for ArduPilot CRSF -> /dev/ttyGS0)
-mkdir -p functions/acm.GS0
-echo 0 > functions/acm.GS0/console
-
-# 3. FunctionFS (Vendor Class Bulk Endpoint for Video)
+# 2. FunctionFS (Vendor Class Bulk Endpoint for Video)
 mkdir -p functions/ffs.vtx
 mkdir -p /dev/usb-ffs/vtx
 mountpoint -q /dev/usb-ffs/vtx || mount -t functionfs vtx /dev/usb-ffs/vtx
 
+# 3. FunctionFS (Vendor Class Interrupt Endpoints for CRSF + Target)
+mkdir -p functions/ffs.crsf
+mkdir -p /dev/usb-ffs/crsf
+mountpoint -q /dev/usb-ffs/crsf || mount -t functionfs crsf /dev/usb-ffs/crsf
+
 mkdir -p configs/c.1/strings/0x409
-echo "CDC-NCM + ACM + VTX Bulk" > configs/c.1/strings/0x409/configuration
+echo "CDC-NCM + VTX + CRSF Vendor" > configs/c.1/strings/0x409/configuration
 
+rm -f configs/c.1/acm.GS0
 ln -sf functions/ncm.usb0 configs/c.1/
-ln -sf functions/acm.GS0 configs/c.1/
-ln -sf functions/ffs.vtx configs/c.1/
+ln -sf functions/ffs.vtx  configs/c.1/
+ln -sf functions/ffs.crsf configs/c.1/
 
-# Launch the persistent USB daemon in background
+# Launch persistent USB daemon (writes BOTH ep0s before binding UDC)
 killall luckfox-usb-daemon 2>/dev/null || true
 luckfox-usb-daemon &

@@ -1,12 +1,12 @@
 [Unit]
 Description=ArduPilot Plane for Luckfox RV1106
-After=luckfox-usb-gadget.service systemd-networkd.service
-Requires=luckfox-usb-gadget.service
+After=luckfox-usb-gadget.service crsf-mux.service systemd-networkd.service
+Requires=luckfox-usb-gadget.service crsf-mux.service
 
 [Service]
 Type=simple
-ExecStartPre=/bin/sh -c 'i=0; while [ $i -lt 50 ]; do [ -c /dev/ttyGS0 ] && [ -n "$(cat /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null)" ] && exit 0; sleep 0.2; i=$((i+1)); done; exit 1'
-ExecStart=/usr/bin/arduplane --defaults /etc/ardupilot.parm --serial0 tcp:0.0.0.0:5760 --serial1 /dev/ttyGS0
+ExecStartPre=/bin/sh -c 'i=0; while [ $i -lt 50 ]; do [ -c /tmp/ttyAP_crsf ] && [ -n "$(cat /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null)" ] && exit 0; sleep 0.2; i=$((i+1)); done; exit 1'
+ExecStart=/usr/bin/arduplane --defaults /etc/ardupilot.parm --serial0 tcp:0.0.0.0:5760 --serial1 /tmp/ttyAP_crsf
 Restart=always
 RestartSec=2
 
