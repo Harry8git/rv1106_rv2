@@ -1,0 +1,13 @@
+[Unit]
+Description=Low-Power Motion-Assisted Visual Tracker
+After=crsf-mux.service
+Requires=crsf-mux.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/luckfox_tracker
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -493,7 +493,7 @@ echo 'PREFERRED_VERSION_linux-rockchip = "6.12.69"' \
 
 bitbake -R /tmp/rv1106-kernel-6.12.conf virtual/kernel
 
-
+killall luckfox_tracker
 bitbake luckfox-tracker
 bitbake luckfox-tracker -c compile -f && bitbake luckfox-tracker
 scp ~/OrbStack/rv1106g3/home/hspencer/rv2/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-tracker/*/image/usr/bin/luckfox_tracker root@192.168.1.100:/tmp/luckfox_tracker
